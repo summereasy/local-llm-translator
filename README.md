@@ -2,62 +2,40 @@
 
 A Chrome extension for translating web pages and selected text through your own local or self-hosted LLM endpoint.
 
+It works with local/self-hosted services like Ollama, LM Studio, omlx, vLLM, SGLang, llama.cpp, or any OpenAI-compatible `/v1/chat/completions` endpoint. If you still want to use a hosted provider, put your API key and base URL in the settings page.
+
 I do not understand why this kind of browser translation tool is so often closed source, so I made one that is open source.
-
-## What It Is
-
-Local LLM Translator is a small browser extension focused on one job: translate web content through an endpoint you control.
-
-It currently targets local/self-hosted services first:
-
-- omlx
-- Ollama
-- LM Studio
-- vLLM
-- SGLang
-- llama.cpp server
-- Any OpenAI-compatible `/v1/chat/completions` endpoint
-
-If you still want to use a hosted provider, you can. Put your OpenAI-compatible API key and base URL in the settings page. The extension does not care whether that endpoint is local, LAN-only, self-hosted, or a cloud provider.
-
-## Privacy
-
-There is no login.
-
-There is no account.
-
-There is no analytics.
-
-There is no server operated by this project.
-
-The extension does not record, collect, upload, or inspect anyone's usage data. It sends selected/page text only to the endpoint you configure. If you point it at `127.0.0.1`, it stays on your own machine. If you point it at a remote API, that is your choice and your provider's privacy policy applies.
-
-## Features
-
-- Translate the current page with a keyboard shortcut.
-- Toggle translated/original text with the same shortcut.
-- Translate selected text from a small floating button.
-- Use a local or self-hosted OpenAI-compatible endpoint.
-- Use Ollama native `/api/chat` if you prefer.
-- Configure target language, display mode, text style, model, endpoint, API key, prompt, and request concurrency.
-- Cache translated paragraphs in memory while the page is open, so toggling page translation off/on does not resend already translated paragraphs.
-
-Default shortcuts:
-
-- `Option+A`: translate page / show original
-- `Option+E`: translate selected text
-
-Chrome may keep old shortcut bindings when an unpacked extension is reloaded. Open `chrome://extensions/shortcuts` if you need to update them manually.
 
 ## Screenshots
 
-### Selection Translation
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Selection Translation</strong>
+      <br />
+      <img src="docs/images/selection-translate.jpg" alt="Selection translation popup" />
+    </td>
+    <td width="50%">
+      <strong>Full Page Translation</strong>
+      <br />
+      <img src="docs/images/full-translate.jpg" alt="Full page translation" />
+    </td>
+  </tr>
+</table>
 
-![Selection translation popup](docs/images/selection-translate.jpg)
+## Features
 
-### Full Page Translation
+- Translate the current page with `Option+A`.
+- Toggle translated/original text with the same shortcut.
+- Translate selected text with `Option+E` or the floating button.
+- Configure endpoint, model, API key, target language, prompt, display mode, text style, and request concurrency.
+- Cache translated paragraphs in memory while the page is open, so toggling page translation off/on does not resend already translated paragraphs.
 
-![Full page translation](docs/images/full-translate.jpg)
+Chrome may keep old shortcut bindings when an unpacked extension is reloaded. Open `chrome://extensions/shortcuts` if you need to update them manually.
+
+## Privacy
+
+There is no login / account / analytics / project server. The extension does not record or collect usage data. It sends selected/page text only to the endpoint you configure. If you point it at `127.0.0.1`, it stays on your own machine. If you point it at a remote API, that is your choice and your provider's privacy policy applies.
 
 ## Installation From Source
 
