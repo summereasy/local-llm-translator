@@ -1,0 +1,56 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "origin",
+          "operation": "set",
+          "value": "http://127.0.0.1:11434"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "http://*:11434",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "origin",
+          "operation": "set",
+          "value": "http://127.0.0.1:1234"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "http://*:1234",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "origin",
+          "operation": "set",
+          "value": "http://127.0.0.1:12345"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "http://*:12345",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

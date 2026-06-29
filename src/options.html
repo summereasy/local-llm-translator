@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local LLM Translator 设置</title>
+    <link rel="stylesheet" href="ui.css" />
+  </head>
+  <body class="options">
+    <main>
+      <header class="settings-header">
+        <div class="brand settings-brand">
+          <img src="icon/48.png" alt="" />
+          <div>
+            <strong>Local LLM Translator</strong>
+            <span>v0.1.0</span>
+          </div>
+        </div>
+        <p id="status" class="status">设置会自动保存</p>
+      </header>
+
+      <form id="settingsForm">
+        <section class="settings-section">
+          <h1>基本设置</h1>
+          <div class="settings-card">
+            <label class="row-label">
+              <span>
+                <strong>目标语言</strong>
+                <small>页面和划词翻译的输出语言</small>
+              </span>
+              <select id="targetLanguage">
+                <option value="简体中文">简体中文</option>
+                <option value="繁體中文">繁體中文</option>
+                <option value="English">English</option>
+                <option value="日本語">日本語</option>
+                <option value="한국어">한국어</option>
+                <option value="Français">Français</option>
+                <option value="Deutsch">Deutsch</option>
+                <option value="Español">Español</option>
+              </select>
+            </label>
+
+            <label class="row-label">
+              <span>
+                <strong>显示方式</strong>
+                <small>选择如何显示原文和译文</small>
+              </span>
+              <select id="translationMode">
+                <option value="bilingual">双语对照</option>
+                <option value="replace">仅显示译文</option>
+              </select>
+            </label>
+
+            <fieldset id="styleFieldset" class="style-fieldset">
+              <legend>
+                <strong>文本样式</strong>
+                <small>仅在双语对照时应用</small>
+              </legend>
+              <div class="style-grid" id="styleGrid">
+                <label class="style-option">
+                  <input type="radio" name="translationTextStyle" value="none" />
+                  <span class="preview style-none">示例文本</span>
+                  <small>无</small>
+                </label>
+                <label class="style-option">
+                  <input type="radio" name="translationTextStyle" value="muted" />
+                  <span class="preview style-muted">示例文本</span>
+                  <small>弱化</small>
+                </label>
+                <label class="style-option">
+                  <input type="radio" name="translationTextStyle" value="italic" />
+                  <span class="preview style-italic">示例文本</span>
+                  <small>斜体</small>
+                </label>
+                <label class="style-option">
+                  <input type="radio" name="translationTextStyle" value="bold" />
+                  <span class="preview style-bold">示例文本</span>
+                  <small>加粗</small>
+                </label>
+                <label class="style-option">
+                  <input type="radio" name="translationTextStyle" value="underline" />
+                  <span class="preview style-underline">示例文本</span>
+                  <small>下划线</small>
+                </label>
+                <label class="style-option">
+                  <input type="radio" name="translationTextStyle" value="highlight" />
+                  <span class="preview style-highlight">示例文本</span>
+                  <small>高亮</small>
+                </label>
+              </div>
+            </fieldset>
+
+            <label class="switch-row">
+              <span>
+                <strong>翻译全页</strong>
+                <small>默认快捷键 <kbd>⌥A</kbd>，可在浏览器快捷键设置中修改</small>
+              </span>
+              <button id="openShortcutsPage" type="button">修改快捷键</button>
+            </label>
+
+            <label class="switch-row">
+              <span>
+                <strong>划词翻译</strong>
+                <small>选中文本时显示翻译按钮，默认快捷键 <kbd>⌥E</kbd></small>
+              </span>
+              <input id="enableSelectionButton" type="checkbox" />
+            </label>
+
+            <label class="row-label">
+              <span>
+                <strong>并发请求</strong>
+                <small>同时发出的 HTTP 请求数量。omlx batchSize=8 时这里通常设为 8</small>
+              </span>
+              <select id="maxConcurrentRequests">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="8">8</option>
+                <option value="12">12</option>
+                <option value="16">16</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h1>本地服务</h1>
+          <p class="section-copy">配置本地或自托管的翻译后端。默认使用 OpenAI-compatible 接口。</p>
+          <div class="settings-card">
+            <label class="row-label">
+              <span>
+                <strong>API 类型</strong>
+                <small>omlx、LM Studio、vLLM、SGLang 通常选择 OpenAI-compatible</small>
+              </span>
+              <select id="backendKind">
+                <option value="openai-compatible">OpenAI-compatible</option>
+                <option value="ollama">Ollama native</option>
+              </select>
+            </label>
+            <label class="row-label">
+              <span>
+                <strong>Endpoint</strong>
+                <small>OpenAI-compatible 示例: http://127.0.0.1:12345/v1</small>
+              </span>
+              <input id="baseUrl" type="url" spellcheck="false" />
+            </label>
+            <label class="row-label">
+              <span>
+                <strong>模型</strong>
+                <small>填写后端暴露的模型名</small>
+              </span>
+              <input id="model" type="text" spellcheck="false" />
+            </label>
+            <label class="row-label">
+              <span>
+                <strong>API Key</strong>
+                <small>本地服务不需要时留空</small>
+              </span>
+              <input id="apiKey" type="password" spellcheck="false" autocomplete="off" />
+            </label>
+            <label class="stack-label">
+              <span>
+                <strong>Prompt</strong>
+                <small>可使用 {{targetLanguage}} 和 {{text}}</small>
+              </span>
+              <textarea id="promptTemplate" rows="8" spellcheck="false"></textarea>
+            </label>
+          </div>
+        </section>
+      </form>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

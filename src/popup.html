@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local LLM Translator</title>
+    <link rel="stylesheet" href="ui.css" />
+  </head>
+  <body class="popup">
+    <main>
+      <header>
+        <div class="brand">
+          <img src="icon/48.png" alt="" />
+          <h1>Local LLM Translator</h1>
+        </div>
+        <button id="openOptions" type="button" class="icon-button" title="设置">设置</button>
+      </header>
+      <section class="select-card">
+        <span>目标语言</span>
+        <strong id="targetLanguage">读取中...</strong>
+      </section>
+      <section class="select-card">
+        <span>翻译服务</span>
+        <strong id="providerName">读取中...</strong>
+        <small id="providerModel"></small>
+        <small id="providerEndpoint"></small>
+      </section>
+      <button id="togglePage" type="button" class="primary page-action">翻译当前页面</button>
+      <p id="status" class="status bordered">读取页面状态中...</p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
