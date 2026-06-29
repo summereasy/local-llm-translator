@@ -1,5 +1,7 @@
 # Local LLM Translator
 
+English | [简体中文](README_zh.md)
+
 A Chrome extension for translating web pages and selected text through your own local or self-hosted LLM endpoint.
 
 It works with local/self-hosted services like Ollama, LM Studio, omlx, vLLM, SGLang, llama.cpp, or any OpenAI-compatible `/v1/chat/completions` endpoint. If you still want to use a hosted provider, put your API key and base URL in the settings page.
