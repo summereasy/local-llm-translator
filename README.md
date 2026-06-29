@@ -49,6 +49,16 @@ Default shortcuts:
 
 Chrome may keep old shortcut bindings when an unpacked extension is reloaded. Open `chrome://extensions/shortcuts` if you need to update them manually.
 
+## Screenshots
+
+### Selection Translation
+
+![Selection translation popup](docs/images/selection-translate.jpg)
+
+### Full Page Translation
+
+![Full page translation](docs/images/full-translate.jpg)
+
 ## Installation From Source
 
 Requirements:
