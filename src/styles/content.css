@@ -94,6 +94,18 @@
   display: none;
 }
 
+h1 .local-translator-wrapper.local-translator-completed,
+a.ytLockupMetadataViewModelTitle .local-translator-wrapper.local-translator-completed {
+  display: contents;
+}
+
+h1 .local-translator-wrapper.local-translator-completed > .local-translator-result:has(> a, > span, > p),
+a.ytLockupMetadataViewModelTitle
+  .local-translator-wrapper.local-translator-completed
+  > .local-translator-result:has(> a, > span, > p) {
+  display: contents;
+}
+
 .local-translator-mode-bilingual > .local-translator-wrapper.local-translator-completed > .local-translator-result {
   margin-top: 0.25em;
 }
@@ -129,7 +141,7 @@
 }
 
 .local-translator-style-muted {
-  color: #6b7280;
+  opacity: 0.72;
 }
 
 .local-translator-style-italic {

@@ -362,7 +362,7 @@ function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
       shouldTranslateElement(element, settings, { minTextLength: minCommentTextLength })
     )
   );
-  const candidates = dedupeNestedBlocks([...preferred, ...siteSpecific]);
+  const candidates = dedupeNestedBlocks([...siteSpecific, ...preferred]);
 
   if (candidates.length > 0) {
     return candidates.slice(0, settings.maxConcurrentRequests * 3);
@@ -416,6 +416,12 @@ function shouldTranslateElement(
   if (isLinkDenseElement(element)) {
     return false;
   }
+  if (isCompositeMetadataBlock(element)) {
+    return false;
+  }
+  if (isYoutubeWatchChrome(element)) {
+    return false;
+  }
   if (!isVisible(element)) {
     return false;
   }
@@ -448,6 +454,34 @@ function isLinkDenseElement(element: Element): boolean {
   return linkTextLength / text.length > 0.55;
 }
 
+function isCompositeMetadataBlock(element: Element): boolean {
+  const hasHeading = element.querySelector("h1, h2, h3");
+  const hasChannel = element.querySelector("ytd-channel-name, #channel-name, #owner, ytd-video-owner-renderer");
+  const hasActions = element.querySelector(
+    "button, ytd-button-renderer, ytd-subscribe-button-renderer, #actions-inner, ytd-menu-renderer"
+  );
+  if (hasHeading && (hasChannel || hasActions)) {
+    return true;
+  }
+  if (hasChannel && hasActions) {
+    return true;
+  }
+  return element.matches("#info, #top-row, ytd-video-owner-renderer, #owner, #actions, #actions-inner");
+}
+
+function isYoutubeWatchChrome(element: Element): boolean {
+  const host = location.hostname.toLowerCase();
+  if (!host.endsWith("youtube.com") && host !== "youtu.be") {
+    return false;
+  }
+  if (element.closest("#description, ytd-expandable-video-description-body, #description-inline-expander")) {
+    return false;
+  }
+  return element.closest(
+    "#info, #top-row, ytd-video-owner-renderer, #owner, #actions, #actions-inner, ytd-menu-renderer, ytd-channel-name, #channel-name"
+  ) !== null;
+}
+
 function isLeafLikeBlock(element: Element): boolean {
   const text = normalizeText(element.textContent ?? "");
   if (text.length < 80) {
@@ -457,6 +491,70 @@ function isLeafLikeBlock(element: Element): boolean {
     const childText = normalizeText(child.textContent ?? "");
     return child.matches(preferredBlockSelector) || childText.length > 80;
   });
+}
+
+function findDeepestTextElement(root: Element): HTMLElement | null {
+  const leaves: HTMLElement[] = [];
+  const walk = (node: Element): void => {
+    if (node.childElementCount === 0 && node instanceof HTMLElement) {
+      leaves.push(node);
+      return;
+    }
+    for (const child of node.children) {
+      walk(child);
+    }
+  };
+  walk(root);
+  return (
+    leaves.find((leaf) =>
+      leaf.matches(
+        '[role="text"], .ytAttributedStringHost, .yt-formatted-string, .yt-attributed-string, .yt-core-attributed-string, span[dir]'
+      )
+    ) ??
+    leaves[leaves.length - 1] ??
+    null
+  );
+}
+
+function findPresentationTemplate(container: Element): HTMLElement | null {
+  const selectors = [
+    "a[class*='Title'], a[class*='title']",
+    ".yt-formatted-string",
+    ".yt-attributed-string",
+    ".ytAttributedStringHost",
+    "[role='text']",
+    "span[dir]",
+    "span",
+    "a"
+  ];
+  for (const selector of selectors) {
+    for (const match of container.querySelectorAll(selector)) {
+      if (!(match instanceof HTMLElement)) {
+        continue;
+      }
+      if (match.closest("ytd-channel-name, #channel-name, #owner, #info")) {
+        continue;
+      }
+      if (normalizeText(match.textContent ?? "").length === 0) {
+        continue;
+      }
+      return match;
+    }
+  }
+  const firstElement = container.firstElementChild;
+  return firstElement instanceof HTMLElement ? firstElement : null;
+}
+
+function buildPresentationResult(original: HTMLElement, translated: string): Node {
+  const template = findPresentationTemplate(original);
+  if (!template) {
+    return document.createTextNode(translated);
+  }
+
+  const clone = template.cloneNode(true) as HTMLElement;
+  const textTarget = findDeepestTextElement(clone) ?? clone;
+  textTarget.textContent = translated;
+  return clone;
 }
 
 function createBlockTranslationShell(
@@ -507,6 +605,15 @@ function completeBlockTranslation(
     settings.translationMode === "bilingual"
       ? `local-translator-result local-translator-style-${settings.translationTextStyle}`
       : "local-translator-result";
+
+  if (settings.translationMode === "replace") {
+    const original = block.wrapper.querySelector(".local-translator-original");
+    if (original instanceof HTMLElement) {
+      block.result.replaceChildren(buildPresentationResult(original, translated));
+      return;
+    }
+  }
+
   block.result.textContent = translated;
 }
 
@@ -808,16 +915,85 @@ function querySiteSpecificBlocks(): Element[] {
     return [];
   }
 
-  const commentHosts = document.querySelectorAll(
-    "ytd-comment-thread-renderer, ytd-comment-renderer, ytd-comment-view-model"
-  );
   const blocks: Element[] = [];
-  for (const commentHost of commentHosts) {
-    commentHost.querySelectorAll("yt-formatted-string#content-text, #content-text").forEach((element) => {
+
+  document
+    .querySelectorAll(
+      "ytd-watch-metadata h1 yt-formatted-string, #title h1 yt-formatted-string, h1.ytd-watch-metadata-renderer yt-formatted-string"
+    )
+    .forEach((element) => {
       blocks.push(element);
+    });
+
+  blocks.push(...queryYoutubeDescriptionBlocks());
+  blocks.push(...queryYoutubeCommentBlocks());
+  return dedupeElements(blocks);
+}
+
+function queryYoutubeDescriptionBlocks(): Element[] {
+  const blocks: Element[] = [];
+  const roots = document.querySelectorAll(
+    "#description, ytd-expandable-video-description-body, #description-inline-expander, ytd-text-inline-expander"
+  );
+  const selectors = [
+    "yt-formatted-string",
+    "yt-attributed-string",
+    "#snippet-text",
+    "#content"
+  ];
+  for (const root of roots) {
+    for (const selector of selectors) {
+      root.querySelectorAll(selector).forEach((element) => {
+        if (element.closest("ytd-video-description-transcript-section-renderer")) {
+          return;
+        }
+        blocks.push(element);
+      });
+    }
+  }
+  return blocks;
+}
+
+const youtubeCommentTextSelector = [
+  "yt-formatted-string#content-text",
+  "yt-attributed-string#content-text",
+  "#content-text.yt-core-attributed-string",
+  "#content-text"
+].join(",");
+
+function queryYoutubeCommentBlocks(): Element[] {
+  const blocks: Element[] = [];
+  const hosts = document.querySelectorAll(
+    "ytd-comment-thread-renderer, ytd-comment-renderer, ytd-comment-view-model, ytd-comments"
+  );
+  for (const commentHost of hosts) {
+    queryWithinElementTree(commentHost, youtubeCommentTextSelector).forEach((element) => {
+      if (element.closest("ytd-comment-thread-renderer, ytd-comment-renderer, ytd-comment-view-model")) {
+        blocks.push(element);
+      }
     });
   }
   return blocks;
+}
+
+function queryWithinElementTree(root: Element, selector: string): Element[] {
+  const result: Element[] = [];
+  const visit = (node: Element | ShadowRoot): void => {
+    node.querySelectorAll(selector).forEach((element) => {
+      result.push(element);
+    });
+    node.querySelectorAll("*").forEach((element) => {
+      if (element.shadowRoot) {
+        visit(element.shadowRoot);
+      }
+    });
+  };
+  visit(root);
+  return result;
+}
+
+function dedupeElements(elements: Element[]): Element[] {
+  return [...new Set(elements)];
 }
 
 function isShortLabelElement(element?: Element): boolean {
