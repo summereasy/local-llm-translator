@@ -84,6 +84,10 @@ let mutationObserver: MutationObserver | null = null;
 let runId = 0;
 let scheduled = 0;
 let hadSelectionBeforePointerDown = false;
+let lastPointerPosition: SelectionAnchor = {
+  x: Math.round(window.innerWidth / 2),
+  y: Math.round(window.innerHeight / 2)
+};
 const translationCache = new Map<string, string>();
 const maxCacheEntries = 1000;
 
@@ -105,6 +109,10 @@ chrome.runtime.onMessage.addListener((message: LocalTranslatorRequest, _sender, 
 
   return false;
 });
+
+document.addEventListener("mousemove", (event) => {
+  lastPointerPosition = { x: event.clientX, y: event.clientY };
+}, { passive: true });
 
 document.addEventListener("mousedown", (event) => {
   if ((event.target as Element | null)?.closest("[data-local-translator-ui]")) {
@@ -525,12 +533,11 @@ async function translateSelection(): Promise<void> {
   const selection = window.getSelection();
   const text = selection?.toString().trim() ?? "";
   if (!text || !selection?.rangeCount) {
-    showPanel("没有选中文本。");
     return;
   }
 
   const rect = selection.getRangeAt(0).getBoundingClientRect();
-  const anchor = { x: rect.right, y: rect.bottom };
+  const anchor = selectionAnchorFromRect(rect);
   showPanel("翻译中...", anchor);
   try {
     showPanel(await translateText(text), anchor);
@@ -619,14 +626,19 @@ function showPanel(text: string, anchor?: SelectionAnchor): void {
   panel = box;
   document.documentElement.append(box);
 
-  if (anchor) {
-    positionFloatingElement(box, anchor, {
-      width: Math.min(520, window.innerWidth * 0.8),
-      height: box.offsetHeight || 180,
-      verticalOffset: 8,
-      horizontalOffset: 12
-    });
+  positionFloatingElement(box, anchor ?? lastPointerPosition, {
+    width: Math.min(520, window.innerWidth * 0.8),
+    height: box.offsetHeight || 180,
+    verticalOffset: 8,
+    horizontalOffset: 12
+  });
+}
+
+function selectionAnchorFromRect(rect: DOMRect): SelectionAnchor {
+  if (rect.width > 0 || rect.height > 0) {
+    return { x: rect.right, y: rect.bottom };
   }
+  return lastPointerPosition;
 }
 
 function positionFloatingElement(
