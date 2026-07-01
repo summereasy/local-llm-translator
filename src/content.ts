@@ -52,11 +52,14 @@ const preferredBlockSelector = [
 ].join(",");
 
 const minTextLength = 12;
+const minSelectionTextLength = 1;
 const minShortLabelLength = 2;
 const minCommentTextLength = 2;
 const maxTextLength = 4000;
 const mentionTokenPrefix = "\uE000LLT";
 const mentionTokenSuffix = "\uE001";
+const minPanelWidth = 200;
+const maxPanelWidth = 520;
 
 type TranslatedBlock = {
   element: Element;
@@ -137,7 +140,7 @@ document.addEventListener("mouseup", (event) => {
     const selection = window.getSelection();
     const text = selection?.toString().trim() ?? "";
 
-    if (!selection || selection.isCollapsed || text.length < minTextLength || !selection.rangeCount) {
+    if (!selection || selection.isCollapsed || text.length < minSelectionTextLength || !selection.rangeCount) {
       hidePanel();
       hadSelectionBeforePointerDown = false;
       return;
@@ -650,9 +653,13 @@ function showPanel(text: string, anchor?: SelectionAnchor): void {
   panel = box;
   document.documentElement.append(box);
 
+  const panelWidth = Math.min(
+    Math.max(box.offsetWidth, minPanelWidth),
+    Math.min(maxPanelWidth, window.innerWidth * 0.8)
+  );
   positionFloatingElement(box, anchor ?? lastPointerPosition, {
-    width: Math.min(520, window.innerWidth * 0.8),
-    height: box.offsetHeight || 180,
+    width: panelWidth,
+    height: box.offsetHeight || 120,
     verticalOffset: 8,
     horizontalOffset: 12
   });

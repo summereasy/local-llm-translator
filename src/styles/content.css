@@ -44,7 +44,9 @@
 
 .local-translator-panel {
   position: absolute;
-  width: min(520px, calc(100vw - 40px));
+  width: max-content;
+  min-width: min(200px, calc(100vw - 40px));
+  max-width: min(520px, calc(100vw - 40px));
   max-height: min(420px, calc(100vh - 40px));
   overflow: auto;
   border: 1px solid #414b61;
@@ -56,13 +58,13 @@
   line-height: 1.6;
   padding: 0;
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .local-translator-panel-body {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  min-height: 56px;
   padding: 18px 20px;
 }
 

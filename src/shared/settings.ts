@@ -41,9 +41,33 @@ export const defaultSettings: LocalTranslatorSettings = {
 
 const settingsKey = "localTranslator.settings";
 
+export function isExtensionContextValid(): boolean {
+  try {
+    return Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function isExtensionContextInvalidatedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Extension context invalidated");
+}
+
 export async function loadSettings(): Promise<LocalTranslatorSettings> {
-  const stored = await chrome.storage.sync.get(settingsKey);
-  return normalizeSettings(stored[settingsKey]);
+  if (!isExtensionContextValid()) {
+    return normalizeSettings(undefined);
+  }
+
+  try {
+    const stored = await chrome.storage.sync.get(settingsKey);
+    return normalizeSettings(stored[settingsKey]);
+  } catch (error) {
+    if (isExtensionContextInvalidatedError(error)) {
+      return normalizeSettings(undefined);
+    }
+    throw error;
+  }
 }
 
 export async function saveSettings(settings: LocalTranslatorSettings): Promise<void> {
