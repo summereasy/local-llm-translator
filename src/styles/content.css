@@ -12,31 +12,33 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  width: 104px;
-  height: 42px;
+  gap: 6px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
   border: 1px solid #60708a;
-  border-radius: 8px;
+  border-radius: 7px;
   background: #3b4657;
   color: #ffffff;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
   cursor: pointer;
-  font-size: 17px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1;
   text-align: center;
+  white-space: nowrap;
 }
 
 .local-translator-float-button span {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 23px;
-  height: 23px;
-  border-radius: 5px;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
   background: transparent;
   color: #ffffff;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 700;
 }
 

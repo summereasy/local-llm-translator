@@ -1,5 +1,11 @@
 import { loadSettings, type LocalTranslatorSettings } from "./shared/settings";
-import type { LocalTranslatorRequest, TranslateTextResponse, TranslateTextsResponse } from "./shared/messages";
+import { formatCommandShortcut } from "./shared/shortcuts";
+import type {
+  GetCommandShortcutResponse,
+  LocalTranslatorRequest,
+  TranslateTextResponse,
+  TranslateTextsResponse
+} from "./shared/messages";
 
 chrome.commands.onCommand.addListener((command) => {
   if (command === "toggle-page-translation") {
@@ -29,6 +35,16 @@ chrome.runtime.onMessage.addListener((message: LocalTranslatorRequest, _sender, 
         sendResponse({ ok: false, error: errorMessage(error) } satisfies TranslateTextsResponse);
       });
 
+    return true;
+  }
+
+  if (message.type === "get-command-shortcut") {
+    void chrome.commands.getAll().then((commands) => {
+      const command = commands.find((item) => item.name === message.command);
+      sendResponse({
+        shortcut: formatCommandShortcut(message.command, command?.shortcut)
+      } satisfies GetCommandShortcutResponse);
+    });
     return true;
   }
 

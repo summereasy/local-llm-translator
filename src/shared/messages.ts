@@ -20,6 +20,15 @@ export type GetPageStateRequest = {
   type: "get-page-state";
 };
 
+export type GetCommandShortcutRequest = {
+  type: "get-command-shortcut";
+  command: string;
+};
+
+export type GetCommandShortcutResponse = {
+  shortcut: string;
+};
+
 export type PageTranslationProgressMessage = {
   type: "page-translation-progress";
   active: boolean;
@@ -38,7 +47,8 @@ export type LocalTranslatorRequest =
   | TranslateTextsRequest
   | TogglePageTranslationRequest
   | TranslateSelectionRequest
-  | GetPageStateRequest;
+  | GetPageStateRequest
+  | GetCommandShortcutRequest;
 
 export type TranslateTextResponse =
   | {

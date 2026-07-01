@@ -1,5 +1,6 @@
 import { loadSettings, type LocalTranslatorSettings } from "./shared/settings";
 import type {
+  GetCommandShortcutResponse,
   LocalTranslatorRequest,
   PageTranslationState,
   TranslateTextResponse,
@@ -90,6 +91,9 @@ let lastPointerPosition: SelectionAnchor = {
 };
 const translationCache = new Map<string, string>();
 const maxCacheEntries = 1000;
+let selectionShortcutLabel = "⌥E";
+
+void refreshSelectionShortcutLabel();
 
 chrome.runtime.onMessage.addListener((message: LocalTranslatorRequest, _sender, sendResponse) => {
   if (message.type === "toggle-page-translation") {
@@ -154,7 +158,7 @@ document.addEventListener("mouseup", (event) => {
       if (!settings.enableSelectionButton) {
         return;
       }
-      showSelectionButton(text, anchor);
+      void showSelectionButton(text, anchor);
     });
   });
 });
@@ -571,15 +575,15 @@ async function translateTexts(texts: string[]): Promise<string[]> {
   return response.texts;
 }
 
-function showSelectionButton(text: string, anchor: SelectionAnchor): void {
+async function showSelectionButton(text: string, anchor: SelectionAnchor): Promise<void> {
   hidePanel();
+  await refreshSelectionShortcutLabel();
 
   const button = document.createElement("button");
   button.type = "button";
   button.className = "local-translator-float-button";
   button.dataset.localTranslatorUi = "true";
-  button.innerHTML = `<span aria-hidden="true">文A</span><strong>翻译</strong>`;
-  positionFloatingElement(button, anchor, { width: 104, height: 42, verticalOffset: 12, horizontalOffset: 12 });
+  button.innerHTML = `<span aria-hidden="true">文A</span><strong>翻译(${selectionShortcutLabel})</strong>`;
 
   button.addEventListener("mousedown", stopUiEvent);
   button.addEventListener("mouseup", stopUiEvent);
@@ -602,6 +606,26 @@ function showSelectionButton(text: string, anchor: SelectionAnchor): void {
 
   panel = button;
   document.documentElement.append(button);
+  positionFloatingElement(button, anchor, {
+    width: button.offsetWidth || 120,
+    height: button.offsetHeight || 32,
+    verticalOffset: 12,
+    horizontalOffset: 12
+  });
+}
+
+async function refreshSelectionShortcutLabel(): Promise<void> {
+  try {
+    const response = (await chrome.runtime.sendMessage({
+      type: "get-command-shortcut",
+      command: "translate-selection"
+    })) as GetCommandShortcutResponse;
+    if (response.shortcut) {
+      selectionShortcutLabel = response.shortcut;
+    }
+  } catch {
+    // background 未就绪时保留默认值。
+  }
 }
 
 function showPanel(text: string, anchor?: SelectionAnchor): void {
