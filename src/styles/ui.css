@@ -334,6 +334,60 @@ output {
   padding: 18px;
 }
 
+.quick-settings {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #e1e4ea;
+  border-radius: 14px;
+  background: #fbfbfd;
+  padding: 14px 16px;
+}
+
+.popup-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.popup-switch-row span {
+  color: #374151;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.popup-switch-row input[type="checkbox"] {
+  width: 48px;
+  height: 28px;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid #c9d1d9;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mode-toggle-button {
+  width: auto;
+  min-height: 32px;
+  border: 0;
+  border-radius: 0;
+  background: #ffffff;
+  color: #57606a;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 12px;
+}
+
+.mode-toggle-button.is-active {
+  background: #6475ed;
+  color: #ffffff;
+}
+
 .select-card span {
   color: #6b7280;
   font-size: 15px;

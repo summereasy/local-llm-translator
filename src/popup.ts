@@ -3,7 +3,7 @@ import type {
   PageTranslationProgressMessage,
   PageTranslationState
 } from "./shared/messages";
-import { loadSettings } from "./shared/settings";
+import { loadSettings, saveSettings, type LocalTranslatorSettings, type TranslationMode } from "./shared/settings";
 
 const togglePage = mustGet<HTMLButtonElement>("togglePage");
 const status = mustGet<HTMLElement>("status");
@@ -12,6 +12,9 @@ const targetLanguage = mustGet<HTMLElement>("targetLanguage");
 const providerName = mustGet<HTMLElement>("providerName");
 const providerEndpoint = mustGet<HTMLElement>("providerEndpoint");
 const providerModel = mustGet<HTMLElement>("providerModel");
+const enableSelectionButton = mustGet<HTMLInputElement>("enableSelectionButton");
+const translationModeBilingual = mustGet<HTMLButtonElement>("translationModeBilingual");
+const translationModeReplace = mustGet<HTMLButtonElement>("translationModeReplace");
 
 void refreshState();
 void refreshSettings();
@@ -23,6 +26,18 @@ togglePage.addEventListener("click", async () => {
 
 openOptions.addEventListener("click", () => {
   void chrome.runtime.openOptionsPage();
+});
+
+enableSelectionButton.addEventListener("change", () => {
+  void persistQuickSetting({ enableSelectionButton: enableSelectionButton.checked });
+});
+
+translationModeBilingual.addEventListener("click", () => {
+  void persistQuickSetting({ translationMode: "bilingual" });
+});
+
+translationModeReplace.addEventListener("click", () => {
+  void persistQuickSetting({ translationMode: "replace" });
 });
 
 chrome.runtime.onMessage.addListener((message: PageTranslationProgressMessage) => {
@@ -48,6 +63,23 @@ async function refreshSettings(): Promise<void> {
     settings.backendKind === "ollama" ? "Ollama native" : "OpenAI-compatible";
   providerEndpoint.textContent = settings.baseUrl;
   providerModel.textContent = settings.model || "未设置模型";
+  enableSelectionButton.checked = settings.enableSelectionButton;
+  updateTranslationModeButtons(settings.translationMode);
+}
+
+async function persistQuickSetting(
+  patch: Partial<Pick<LocalTranslatorSettings, "enableSelectionButton" | "translationMode">>
+): Promise<void> {
+  const settings = await loadSettings();
+  await saveSettings({ ...settings, ...patch });
+  if (patch.translationMode) {
+    updateTranslationModeButtons(patch.translationMode);
+  }
+}
+
+function updateTranslationModeButtons(mode: TranslationMode): void {
+  translationModeBilingual.classList.toggle("is-active", mode === "bilingual");
+  translationModeReplace.classList.toggle("is-active", mode === "replace");
 }
 
 function renderState(state: PageTranslationState): void {

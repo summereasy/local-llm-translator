@@ -25,6 +25,19 @@
         <small id="providerModel"></small>
         <small id="providerEndpoint"></small>
       </section>
+      <section class="quick-settings">
+        <label class="popup-switch-row">
+          <span>划词翻译按钮</span>
+          <input id="enableSelectionButton" type="checkbox" />
+        </label>
+        <div class="popup-switch-row">
+          <span>全文翻译显示</span>
+          <div class="mode-toggle" role="group" aria-label="全文翻译显示方式">
+            <button id="translationModeBilingual" type="button" class="mode-toggle-button">双语</button>
+            <button id="translationModeReplace" type="button" class="mode-toggle-button">Replace</button>
+          </div>
+        </div>
+      </section>
       <button id="togglePage" type="button" class="primary page-action">翻译当前页面</button>
       <p id="status" class="status bordered">读取页面状态中...</p>
     </main>
