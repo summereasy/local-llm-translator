@@ -52,7 +52,10 @@ const preferredBlockSelector = [
 
 const minTextLength = 12;
 const minShortLabelLength = 2;
+const minCommentTextLength = 2;
 const maxTextLength = 4000;
+const mentionTokenPrefix = "\uE000LLT";
+const mentionTokenSuffix = "\uE001";
 
 type TranslatedBlock = {
   element: Element;
@@ -264,14 +267,20 @@ async function translateBlockBatch(
   settings: LocalTranslatorSettings,
   currentRunId: number
 ): Promise<void> {
-  const texts = elements.map((element) => normalizeText(element.textContent ?? ""));
-  const cacheKeys = texts.map((text) => getCacheKey(settings, text));
-  const uncached: Array<{ element: Element; text: string; cacheKey: string }> = [];
+  const originalTexts = elements.map((element) => normalizeText(element.textContent ?? ""));
+  const protectedTexts = originalTexts.map(protectTranslationTokens);
+  const cacheKeys = originalTexts.map((text) => getCacheKey(settings, text));
+  const uncached: Array<{ element: Element; text: string; cacheKey: string; tokens: string[] }> = [];
 
   elements.forEach((element, index) => {
     const cached = translationCache.get(cacheKeys[index] ?? "");
     if (!cached) {
-      uncached.push({ element, text: texts[index] ?? "", cacheKey: cacheKeys[index] ?? "" });
+      uncached.push({
+        element,
+        text: protectedTexts[index]?.text ?? "",
+        cacheKey: cacheKeys[index] ?? "",
+        tokens: protectedTexts[index]?.tokens ?? []
+      });
       return;
     }
 
@@ -305,13 +314,15 @@ async function translateBlockBatch(
     requestElements.forEach((element, index) => {
       const translated = translatedTexts[index];
       const shell = shells.get(element);
+      const uncachedItem = uncached[index];
       if (!translated || !pageActive || currentRunId !== runId || !element.isConnected) {
         shell && restoreBlock(shell);
         failedElements.add(element);
         return;
       }
-      setCache(uncached[index]?.cacheKey ?? "", translated);
-      shell && completeBlockTranslation(shell, translated, settings);
+      const restored = restoreTranslationTokens(translated, uncachedItem?.tokens ?? []);
+      setCache(uncachedItem?.cacheKey ?? "", restored);
+      shell && completeBlockTranslation(shell, restored, settings);
       processedElements.add(element);
     });
   } catch (error) {
@@ -326,11 +337,17 @@ async function translateBlockBatch(
 }
 
 function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
-  const candidates = dedupeNestedBlocks(
+  const preferred = dedupeNestedBlocks(
     queryContentRoots(preferredBlockSelector).filter((element) =>
       shouldTranslateElement(element, settings)
     )
   );
+  const siteSpecific = dedupeNestedBlocks(
+    querySiteSpecificBlocks().filter((element) =>
+      shouldTranslateElement(element, settings, { minTextLength: minCommentTextLength })
+    )
+  );
+  const candidates = dedupeNestedBlocks([...preferred, ...siteSpecific]);
 
   if (candidates.length > 0) {
     return candidates.slice(0, settings.maxConcurrentRequests * 3);
@@ -366,8 +383,19 @@ function dedupeNestedBlocks(elements: Element[]): Element[] {
   });
 }
 
-function shouldTranslateElement(element: Element, settings: LocalTranslatorSettings): boolean {
+type TranslateElementOptions = {
+  minTextLength?: number;
+};
+
+function shouldTranslateElement(
+  element: Element,
+  settings: LocalTranslatorSettings,
+  options?: TranslateElementOptions
+): boolean {
   if (processedElements.has(element) || failedElements.has(element) || element.closest(ignoredSelector)) {
+    return false;
+  }
+  if (isMentionOnlyElement(element)) {
     return false;
   }
   if (isLinkDenseElement(element)) {
@@ -378,7 +406,7 @@ function shouldTranslateElement(element: Element, settings: LocalTranslatorSetti
   }
 
   const text = normalizeText(element.textContent ?? "");
-  if (!shouldTranslateText(text, element)) {
+  if (!shouldTranslateText(text, element, options?.minTextLength)) {
     return false;
   }
   if (looksLikeModelName(text)) {
@@ -512,15 +540,16 @@ async function translateSelection(): Promise<void> {
 }
 
 async function translateText(text: string): Promise<string> {
+  const protectedText = protectTranslationTokens(normalizeText(text));
   const response = (await chrome.runtime.sendMessage({
     type: "translate-text",
-    text
+    text: protectedText.text
   })) as TranslateTextResponse;
 
   if (!response.ok) {
     throw new Error(response.error);
   }
-  return response.text;
+  return restoreTranslationTokens(response.text, protectedText.tokens);
 }
 
 async function translateTexts(texts: string[]): Promise<string[]> {
@@ -675,12 +704,16 @@ function isBlockElement(element: Element): boolean {
   return style.display === "block" || style.display === "list-item" || style.display === "table-cell";
 }
 
-function shouldTranslateText(text: string, element?: Element): boolean {
-  const minLength = isShortLabelElement(element) ? minShortLabelLength : minTextLength;
+function shouldTranslateText(text: string, element?: Element, minLengthOverride?: number): boolean {
+  const minLength =
+    minLengthOverride ?? (isShortLabelElement(element) ? minShortLabelLength : minTextLength);
   if (text.length < minLength || text.length > maxTextLength) {
     return false;
   }
   if (/^[0-9.,+\s\-*:|/()[\]{}]+$/.test(text)) {
+    return false;
+  }
+  if (/^@[\w.-]+$/.test(text)) {
     return false;
   }
   if (/^[\w.-]+@[\w.-]+\.[A-Za-z]{2,}$/.test(text)) {
@@ -690,6 +723,58 @@ function shouldTranslateText(text: string, element?: Element): boolean {
     return false;
   }
   return /\p{L}/u.test(text);
+}
+
+function isMentionOnlyElement(element: Element): boolean {
+  const text = normalizeText(element.textContent ?? "");
+  if (/^@[\w.-]+$/.test(text)) {
+    return true;
+  }
+  if (element.matches("a[href*='/@'], a[href*='youtube.com/@']")) {
+    return /^@[\w.-]+$/.test(text);
+  }
+  return false;
+}
+
+type ProtectedText = {
+  text: string;
+  tokens: string[];
+};
+
+function protectTranslationTokens(text: string): ProtectedText {
+  const tokens: string[] = [];
+  const protectedText = text.replace(/@[\w.-]+/g, (match) => {
+    tokens.push(match);
+    return `${mentionTokenPrefix}${tokens.length - 1}${mentionTokenSuffix}`;
+  });
+  return { text: protectedText, tokens };
+}
+
+function restoreTranslationTokens(text: string, tokens: string[]): string {
+  let result = text;
+  tokens.forEach((token, index) => {
+    const marker = `${mentionTokenPrefix}${index}${mentionTokenSuffix}`;
+    result = result.replaceAll(marker, token);
+  });
+  return result;
+}
+
+function querySiteSpecificBlocks(): Element[] {
+  const host = location.hostname.toLowerCase();
+  if (!host.endsWith("youtube.com") && host !== "youtu.be") {
+    return [];
+  }
+
+  const commentHosts = document.querySelectorAll(
+    "ytd-comment-thread-renderer, ytd-comment-renderer, ytd-comment-view-model"
+  );
+  const blocks: Element[] = [];
+  for (const commentHost of commentHosts) {
+    commentHost.querySelectorAll("yt-formatted-string#content-text, #content-text").forEach((element) => {
+      blocks.push(element);
+    });
+  }
+  return blocks;
 }
 
 function isShortLabelElement(element?: Element): boolean {
