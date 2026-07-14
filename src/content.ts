@@ -282,7 +282,7 @@ async function translateBlockBatch(
   settings: LocalTranslatorSettings,
   currentRunId: number
 ): Promise<void> {
-  const originalTexts = elements.map((element) => normalizeText(element.textContent ?? ""));
+  const originalTexts = elements.map((element) => extractBlockText(element));
   const protectedTexts = originalTexts.map(protectTranslationTokens);
   const cacheKeys = originalTexts.map((text) => getCacheKey(settings, text));
   const uncached: Array<{ element: Element; text: string; cacheKey: string; tokens: string[] }> = [];
@@ -410,6 +410,10 @@ function shouldTranslateElement(
   if (processedElements.has(element) || failedElements.has(element) || element.closest(ignoredSelector)) {
     return false;
   }
+  // X 只翻译推文正文。profile / 按钮 / fallback 大容器一律跳过，避免毁掉布局。
+  if (isXHost() && !isXTweetTextElement(element)) {
+    return false;
+  }
   if (isMentionOnlyElement(element)) {
     return false;
   }
@@ -440,6 +444,11 @@ function shouldTranslateElement(
 }
 
 function isLinkDenseElement(element: Element): boolean {
+  // X 会把 @mention / hashtag / t.co 都做成链接，不能按导航链接密度过滤。
+  if (isXTweetTextElement(element) || element.closest('[data-testid="tweetText"]')) {
+    return false;
+  }
+
   const text = normalizeText(element.textContent ?? "");
   if (text.length < 40) {
     return false;
@@ -601,17 +610,25 @@ function completeBlockTranslation(
   settings: LocalTranslatorSettings
 ): void {
   block.wrapper.classList.add("local-translator-completed");
+  const preserveBreaks = isXTweetTextElement(block.element) || translated.includes("\n");
   block.result.className =
     settings.translationMode === "bilingual"
-      ? `local-translator-result local-translator-style-${settings.translationTextStyle}`
-      : "local-translator-result";
+      ? `local-translator-result local-translator-style-${settings.translationTextStyle}${
+          preserveBreaks ? " local-translator-preserve-breaks" : ""
+        }`
+      : `local-translator-result${preserveBreaks ? " local-translator-preserve-breaks" : ""}`;
 
-  if (settings.translationMode === "replace") {
-    const original = block.wrapper.querySelector(".local-translator-original");
-    if (original instanceof HTMLElement) {
-      block.result.replaceChildren(buildPresentationResult(original, translated));
+  const original = block.wrapper.querySelector(".local-translator-original");
+  if (settings.translationMode === "replace" && original instanceof HTMLElement) {
+    // X 等站点可能用更高优先级 display 盖掉 stylesheet，这里强制隐藏原文。
+    original.style.setProperty("display", "none", "important");
+    if (isXTweetTextElement(block.element)) {
+      // 多 span 推文不适合 YouTube 那套 clone-first-span 展示，直接替换为纯文本。
+      block.result.textContent = translated;
       return;
     }
+    block.result.replaceChildren(buildPresentationResult(original, translated));
+    return;
   }
 
   block.result.textContent = translated;
@@ -909,7 +926,19 @@ function restoreTranslationTokens(text: string, tokens: string[]): string {
   return result;
 }
 
+function isXHost(): boolean {
+  const host = location.hostname.toLowerCase();
+  return host === "x.com" || host === "twitter.com" || host.endsWith(".x.com") || host.endsWith(".twitter.com");
+}
+
+function isXTweetTextElement(element: Element): boolean {
+  return element.matches('[data-testid="tweetText"]');
+}
+
 function querySiteSpecificBlocks(): Element[] {
+  if (isXHost()) {
+    return queryXTweetBlocks();
+  }
   const host = location.hostname.toLowerCase();
   if (!host.endsWith("youtube.com") && host !== "youtu.be") {
     return [];
@@ -928,6 +957,10 @@ function querySiteSpecificBlocks(): Element[] {
   blocks.push(...queryYoutubeDescriptionBlocks());
   blocks.push(...queryYoutubeCommentBlocks());
   return dedupeElements(blocks);
+}
+
+function queryXTweetBlocks(): Element[] {
+  return dedupeElements(Array.from(document.querySelectorAll('[data-testid="tweetText"]')));
 }
 
 function queryYoutubeDescriptionBlocks(): Element[] {
@@ -1029,6 +1062,15 @@ function normalizeSelectionText(text: string): string {
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter((line) => line.length > 0)
     .join("\n");
+}
+
+/** 块翻译取文：用 innerText 保留可视换行，避免多 span 推文被 textContent 粘成一行。 */
+function extractBlockText(element: Element): string {
+  const raw = element instanceof HTMLElement ? element.innerText : (element.textContent ?? "");
+  if (isXTweetTextElement(element) || raw.includes("\n")) {
+    return normalizeSelectionText(raw);
+  }
+  return normalizeText(raw);
 }
 
 function getCacheKey(settings: LocalTranslatorSettings, text: string): string {

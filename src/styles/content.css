@@ -91,7 +91,12 @@
 }
 
 .local-translator-mode-replace > .local-translator-wrapper.local-translator-completed > .local-translator-original {
-  display: none;
+  display: none !important;
+}
+
+.local-translator-preserve-breaks {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 h1 .local-translator-wrapper.local-translator-completed,
