@@ -661,7 +661,7 @@ async function translateSelection(): Promise<void> {
 }
 
 async function translateText(text: string): Promise<string> {
-  const protectedText = protectTranslationTokens(normalizeText(text));
+  const protectedText = protectTranslationTokens(normalizeSelectionText(text));
   const response = (await chrome.runtime.sendMessage({
     type: "translate-text",
     text: protectedText.text
@@ -1019,6 +1019,16 @@ function looksLikeModelName(text: string): boolean {
 
 function normalizeText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+/** 选区翻译：保留换行；行内空白压成空格；连续空行压成单行。 */
+function normalizeSelectionText(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line) => line.length > 0)
+    .join("\n");
 }
 
 function getCacheKey(settings: LocalTranslatorSettings, text: string): string {
