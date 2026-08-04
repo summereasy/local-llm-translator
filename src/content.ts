@@ -61,6 +61,22 @@ const mentionTokenSuffix = "\uE001";
 const minPanelWidth = 200;
 const maxPanelWidth = 520;
 
+type StructuredBlockRule = {
+  blockSelector: string;
+  contentSelector: string;
+  relayoutSelector?: string;
+};
+
+// 用于“主文本 + 需保留的元数据”卡片。规则只描述 DOM 契约，
+// 文本提取、结果渲染和布局刷新由通用流程完成。
+const structuredBlockRules: StructuredBlockRule[] = [
+  {
+    blockSelector: "#waterfall .movie-box .photo-info",
+    contentSelector: ":scope > span",
+    relayoutSelector: ".masonry"
+  }
+];
+
 type TranslatedBlock = {
   element: Element;
   originalNodes: Node[];
@@ -430,7 +446,7 @@ function shouldTranslateElement(
     return false;
   }
 
-  const text = normalizeText(element.textContent ?? "");
+  const text = extractBlockText(element);
   if (!shouldTranslateText(text, element, options?.minTextLength)) {
     return false;
   }
@@ -566,6 +582,20 @@ function buildPresentationResult(original: HTMLElement, translated: string): Nod
   return clone;
 }
 
+function buildStructuredBlockResult(
+  original: Element,
+  translated: string,
+  rule: StructuredBlockRule
+): Node {
+  const clone = original.cloneNode(true) as Element;
+  const content = findStructuredBlockContent(clone, rule);
+  const node = content ? findFirstNonEmptyTextNode(content) : null;
+  if (node) {
+    node.nodeValue = translated;
+  }
+  return content ?? document.createTextNode(translated);
+}
+
 function createBlockTranslationShell(
   element: Element,
   settings: LocalTranslatorSettings
@@ -627,7 +657,21 @@ function completeBlockTranslation(
       block.result.textContent = translated;
       return;
     }
+    const structuredRule = findStructuredBlockRule(block.element);
+    if (structuredRule) {
+      // 只替换之前送去翻译的主文本节点，保留卡片里的其他结构和元数据。
+      block.result.replaceChildren(buildStructuredBlockResult(original, translated, structuredRule));
+      scheduleStructuredBlockRelayout(structuredRule);
+      return;
+    }
     block.result.replaceChildren(buildPresentationResult(original, translated));
+    return;
+  }
+
+  const structuredRule = findStructuredBlockRule(block.element);
+  if (structuredRule) {
+    block.result.textContent = translated;
+    scheduleStructuredBlockRelayout(structuredRule);
     return;
   }
 
@@ -649,6 +693,7 @@ function restorePage(): void {
   pageActive = false;
   pending = 0;
   total = 0;
+  scheduleStructuredBlockRelayouts();
   broadcastProgress();
 }
 
@@ -939,6 +984,12 @@ function querySiteSpecificBlocks(): Element[] {
   if (isXHost()) {
     return queryXTweetBlocks();
   }
+
+  const structuredBlocks = queryStructuredBlocks();
+  if (structuredBlocks.length > 0) {
+    return structuredBlocks;
+  }
+
   const host = location.hostname.toLowerCase();
   if (!host.endsWith("youtube.com") && host !== "youtu.be") {
     return [];
@@ -961,6 +1012,54 @@ function querySiteSpecificBlocks(): Element[] {
 
 function queryXTweetBlocks(): Element[] {
   return dedupeElements(Array.from(document.querySelectorAll('[data-testid="tweetText"]')));
+}
+
+function queryStructuredBlocks(): Element[] {
+  return dedupeElements(
+    structuredBlockRules.flatMap((rule) => Array.from(document.querySelectorAll(rule.blockSelector)))
+  );
+}
+
+function findStructuredBlockRule(element: Element): StructuredBlockRule | undefined {
+  return structuredBlockRules.find((rule) => element.matches(rule.blockSelector));
+}
+
+function findStructuredBlockContent(element: Element, rule: StructuredBlockRule): Element | null {
+  return element.matches(rule.contentSelector) ? element : element.querySelector(rule.contentSelector);
+}
+
+function findFirstNonEmptyTextNode(root: Node): Text | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node && !node.nodeValue?.trim()) {
+    node = walker.nextNode();
+  }
+  return node instanceof Text ? node : null;
+}
+
+function extractStructuredBlockText(element: Element, rule: StructuredBlockRule): string {
+  const container = findStructuredBlockContent(element, rule);
+  const titleNode = container ? findFirstNonEmptyTextNode(container) : null;
+  return normalizeText(titleNode?.nodeValue ?? "");
+}
+
+let structuredBlockRelayoutTimer = 0;
+
+function scheduleStructuredBlockRelayout(rule: StructuredBlockRule): void {
+  if (!rule.relayoutSelector || !document.querySelector(rule.relayoutSelector)) {
+    return;
+  }
+  if (structuredBlockRelayoutTimer) {
+    window.clearTimeout(structuredBlockRelayoutTimer);
+  }
+  structuredBlockRelayoutTimer = window.setTimeout(() => {
+    structuredBlockRelayoutTimer = 0;
+    window.dispatchEvent(new Event("resize"));
+  }, 300);
+}
+
+function scheduleStructuredBlockRelayouts(): void {
+  structuredBlockRules.forEach(scheduleStructuredBlockRelayout);
 }
 
 function queryYoutubeDescriptionBlocks(): Element[] {
@@ -1066,6 +1165,10 @@ function normalizeSelectionText(text: string): string {
 
 /** 块翻译取文：用 innerText 保留可视换行，避免多 span 推文被 textContent 粘成一行。 */
 function extractBlockText(element: Element): string {
+  const structuredRule = findStructuredBlockRule(element);
+  if (structuredRule) {
+    return extractStructuredBlockText(element, structuredRule);
+  }
   const raw = element instanceof HTMLElement ? element.innerText : (element.textContent ?? "");
   if (isXTweetTextElement(element) || raw.includes("\n")) {
     return normalizeSelectionText(raw);
@@ -1121,7 +1224,13 @@ function isPageAlreadyTargetLanguage(settings: LocalTranslatorSettings): boolean
 function isTextAlreadyTargetLanguage(text: string, targetLanguage: string): boolean {
   const target = normalizeLanguageCode(targetLanguage);
   if (target === "zh") {
-    return cjkRatio(text) > 0.55;
+    // 目标是简体中文:只有当文本真的是简体中文时才跳过。
+    // 日文(含假名)或繁体中文(含繁体特有字)都不是简体,需要翻译,
+    // 否则 繁→简、日→中 永远不会发生(例如 javbus 这类繁中/日文站)。
+    if (cjkRatio(text) <= 0.55) {
+      return false;
+    }
+    return !containsJapaneseKana(text) && !containsTraditionalChinese(text);
   }
   if (target === "en") {
     return latinRatio(text) > 0.75 && cjkRatio(text) < 0.05;
@@ -1158,6 +1267,21 @@ function cjkRatio(text: string): number {
     return 0;
   }
   return letters.filter((char) => /[\u3400-\u9fff]/u.test(char)).length / letters.length;
+}
+
+const japaneseKanaPattern = /[\u3040-\u309f\u30a0-\u30ff]/;
+
+function containsJapaneseKana(text: string): boolean {
+  return japaneseKanaPattern.test(text);
+}
+
+// 高频繁体特有字:在简体中文里有完全不同的简体写法,几乎不会出现在真正简体文本里。
+// 命中其一即判定为繁体,从而让 繁→简 翻译得以发生。
+const traditionalChineseChars =
+  "當顯聯導覽關訊營網電視節聽藝醫廠廣場個認識實測區號雜誌語經濟繼續紀離開間問題給寫對確廳雙陽陰線練過來還見觀討論設計記評試話詞費買賣資較輕輪轉輸辦辭進連遲達選邊鐵銀銷鋪閱際隨難靈響頁頭領頻類顧養館驗魚鳥點";
+
+function containsTraditionalChinese(text: string): boolean {
+  return [...traditionalChineseChars].some((char) => text.includes(char));
 }
 
 function latinRatio(text: string): number {
