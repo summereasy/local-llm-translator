@@ -74,6 +74,14 @@
   line-height: 1.35;
 }
 
+.local-translator-panel-note {
+  border-top: 1px solid #414b61;
+  color: #f0c674;
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 10px 20px;
+}
+
 .local-translator-panel-footer {
   border-top: 1px solid #414b61;
   color: #a9b1c3;

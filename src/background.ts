@@ -1,4 +1,9 @@
 import { loadSettings, type LocalTranslatorSettings } from "./shared/settings";
+import {
+  resolveChatTemplateKwargs,
+  resolveModelPreset,
+  resolvePromptTemplate
+} from "./shared/modelPresets";
 import { formatCommandShortcut } from "./shared/shortcuts";
 import type {
   GetCommandShortcutResponse,
@@ -71,6 +76,8 @@ async function translateTexts(texts: string[]): Promise<string[]> {
     return [];
   }
 
+  assertBackendSupportsPreset(settings);
+
   if (inputs.length === 1) {
     const input = inputs[0] ?? "";
     if (settings.backendKind === "ollama") {
@@ -105,6 +112,7 @@ async function translateWithOpenAICompatible(settings: LocalTranslatorSettings, 
           content: renderPrompt(settings, text)
         }
       ],
+      ...chatTemplateKwargsBody(settings),
       temperature: 0.2,
       stream: false
     })
@@ -133,6 +141,7 @@ async function translateBatchWithOpenAICompatible(settings: LocalTranslatorSetti
           content: renderBatchPrompt(settings, texts)
         }
       ],
+      ...chatTemplateKwargsBody(settings),
       temperature: 0.2,
       stream: false
     })
@@ -203,9 +212,34 @@ async function translateBatchWithOllama(settings: LocalTranslatorSettings, texts
 }
 
 function renderPrompt(settings: LocalTranslatorSettings, text: string): string {
-  return settings.promptTemplate
+  return resolvePromptTemplate({
+    model: settings.model,
+    targetLanguage: settings.targetLanguage,
+    promptTemplate: settings.promptTemplate,
+    promptTemplateMode: settings.promptTemplateMode
+  })
     .replaceAll("{{targetLanguage}}", settings.targetLanguage)
     .replaceAll("{{text}}", text);
+}
+
+/** 需要 chat_template_kwargs 的模型(如 PLaMo)把目标语言当请求参数下发。 */
+function chatTemplateKwargsBody(settings: LocalTranslatorSettings): Record<string, unknown> {
+  const kwargs = resolveChatTemplateKwargs({
+    model: settings.model,
+    targetLanguage: settings.targetLanguage,
+    promptTemplate: settings.promptTemplate,
+    promptTemplateMode: settings.promptTemplateMode
+  });
+  return kwargs ? { chat_template_kwargs: kwargs } : {};
+}
+
+function assertBackendSupportsPreset(settings: LocalTranslatorSettings): void {
+  const preset = resolveModelPreset(settings.model);
+  if (preset?.requiresOpenAICompatible && settings.backendKind === "ollama") {
+    throw new Error(
+      `${preset.label} 需要 chat_template_kwargs 传目标语言,Ollama 接口不支持。请把 API 类型切换为 OpenAI-compatible。`
+    );
+  }
 }
 
 function renderBatchPrompt(settings: LocalTranslatorSettings, texts: string[]): string {

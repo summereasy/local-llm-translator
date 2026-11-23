@@ -159,10 +159,17 @@
               </span>
               <input id="apiKey" type="password" spellcheck="false" autocomplete="off" />
             </label>
+            <label class="row-label">
+              <span>
+                <strong>自动匹配 Prompt</strong>
+                <small>按模型名内置模板自动选择,翻译专用模型无需手改</small>
+              </span>
+              <input id="autoPromptTemplate" type="checkbox" checked />
+            </label>
             <label class="stack-label">
               <span>
                 <strong>Prompt</strong>
-                <small>可使用 {{targetLanguage}} 和 {{text}}</small>
+                <small id="promptTemplateHint">可使用 {{targetLanguage}} 和 {{text}}</small>
               </span>
               <textarea id="promptTemplate" rows="8" spellcheck="false"></textarea>
             </label>

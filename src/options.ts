@@ -3,9 +3,11 @@ import {
   loadSettings,
   saveSettings,
   type BackendKind,
+  type PromptTemplateMode,
   type TranslationMode,
   type TranslationTextStyle
 } from "./shared/settings";
+import { describePromptResolution, resolvePromptTemplate } from "./shared/modelPresets";
 
 const form = mustGet<HTMLFormElement>("settingsForm");
 const backendKind = mustGet<HTMLSelectElement>("backendKind");
@@ -14,6 +16,8 @@ const apiKey = mustGet<HTMLInputElement>("apiKey");
 const model = mustGet<HTMLInputElement>("model");
 const targetLanguage = mustGet<HTMLSelectElement>("targetLanguage");
 const promptTemplate = mustGet<HTMLTextAreaElement>("promptTemplate");
+const autoPromptTemplate = mustGet<HTMLInputElement>("autoPromptTemplate");
+const promptTemplateHint = mustGet<HTMLElement>("promptTemplateHint");
 const translationMode = mustGet<HTMLSelectElement>("translationMode");
 const styleFieldset = mustGet<HTMLFieldSetElement>("styleFieldset");
 const enableSelectionButton = mustGet<HTMLInputElement>("enableSelectionButton");
@@ -30,11 +34,14 @@ void loadSettings().then((settings) => {
   model.value = settings.model;
   targetLanguage.value = settings.targetLanguage;
   promptTemplate.value = settings.promptTemplate;
+  autoPromptTemplate.checked = settings.promptTemplateMode !== "custom";
   translationMode.value = settings.translationMode;
   setSelectedStyle(settings.translationTextStyle);
   enableSelectionButton.checked = settings.enableSelectionButton;
   maxConcurrentRequests.value = String(settings.maxConcurrentRequests || 8);
   updateStyleAvailability();
+  updatePromptAvailability();
+  updatePromptHint();
 });
 
 backendKind.addEventListener("change", () => {
@@ -44,6 +51,18 @@ backendKind.addEventListener("change", () => {
 });
 
 translationMode.addEventListener("change", updateStyleAvailability);
+autoPromptTemplate.addEventListener("change", () => {
+  updatePromptAvailability();
+  updatePromptHint();
+});
+model.addEventListener("input", () => {
+  updatePromptAvailability();
+  updatePromptHint();
+});
+targetLanguage.addEventListener("change", () => {
+  updatePromptAvailability();
+  updatePromptHint();
+});
 
 form.addEventListener("input", scheduleSave);
 form.addEventListener("change", scheduleSave);
@@ -71,6 +90,7 @@ async function persistSettings(): Promise<void> {
     model: model.value,
     targetLanguage: targetLanguage.value,
     promptTemplate: promptTemplate.value,
+    promptTemplateMode: (autoPromptTemplate.checked ? "auto" : "custom") as PromptTemplateMode,
     translationMode: translationMode.value as TranslationMode,
     translationTextStyle: getSelectedStyle(),
     enableSelectionButton: enableSelectionButton.checked,
@@ -78,6 +98,29 @@ async function persistSettings(): Promise<void> {
     batchSize: 1
   });
   status.textContent = "已自动保存";
+}
+
+function promptInput() {
+  return {
+    model: model.value,
+    targetLanguage: targetLanguage.value,
+    promptTemplate: promptTemplate.value,
+    promptTemplateMode: (autoPromptTemplate.checked ? "auto" : "custom") as PromptTemplateMode
+  };
+}
+
+function updatePromptAvailability(): void {
+  const auto = autoPromptTemplate.checked;
+  promptTemplate.disabled = auto;
+  promptTemplate.classList.toggle("is-disabled", auto);
+  if (auto) {
+    // 自动模式下把将要发送的模板当成预览显示出来,供用户对照。
+    promptTemplate.value = resolvePromptTemplate(promptInput());
+  }
+}
+
+function updatePromptHint(): void {
+  promptTemplateHint.textContent = describePromptResolution(promptInput());
 }
 
 function updateStyleAvailability(): void {

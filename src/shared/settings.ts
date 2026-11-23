@@ -1,4 +1,9 @@
+import { fallbackPromptTemplate } from "./modelPresets";
+
 export type BackendKind = "openai-compatible" | "ollama";
+
+/** auto:按模型名匹配内置模板;custom:强制使用用户填写的模板。 */
+export type PromptTemplateMode = "auto" | "custom";
 
 export type TranslationMode = "replace" | "bilingual";
 
@@ -17,6 +22,7 @@ export type LocalTranslatorSettings = {
   model: string;
   targetLanguage: string;
   promptTemplate: string;
+  promptTemplateMode: PromptTemplateMode;
   translationMode: TranslationMode;
   translationTextStyle: TranslationTextStyle;
   enableSelectionButton: boolean;
@@ -30,8 +36,8 @@ export const defaultSettings: LocalTranslatorSettings = {
   apiKey: "",
   model: "",
   targetLanguage: "简体中文",
-  promptTemplate:
-    "请把下面的文本翻译成{{targetLanguage}}。保留原意、链接文本和术语，不要解释，不要添加额外内容。\n\n{{text}}",
+  promptTemplate: "",
+  promptTemplateMode: "auto",
   translationMode: "bilingual",
   translationTextStyle: "muted",
   enableSelectionButton: true,
@@ -85,10 +91,8 @@ function normalizeSettings(value: unknown): LocalTranslatorSettings {
       typeof input.targetLanguage === "string" && input.targetLanguage.trim()
         ? input.targetLanguage.trim()
         : defaultSettings.targetLanguage,
-    promptTemplate:
-      typeof input.promptTemplate === "string" && input.promptTemplate.trim()
-        ? input.promptTemplate
-        : defaultSettings.promptTemplate,
+    promptTemplate: normalizePromptTemplate(input),
+    promptTemplateMode: normalizePromptTemplateMode(input),
     translationMode: input.translationMode === "replace" ? "replace" : "bilingual",
     translationTextStyle: normalizeTextStyle(input.translationTextStyle),
     enableSelectionButton:
@@ -105,6 +109,24 @@ export function cleanBaseUrl(baseUrl: unknown): string {
     return "";
   }
   return baseUrl.trim().replace(/\/+$/, "");
+}
+
+function normalizePromptTemplateMode(input: Partial<LocalTranslatorSettings>): PromptTemplateMode {
+  if (input.promptTemplateMode === "auto" || input.promptTemplateMode === "custom") {
+    return input.promptTemplateMode;
+  }
+  // 旧版本只有一份全局模板:与旧默认值相同就当作"自动",否则视为用户自定义。
+  const legacyTemplate = typeof input.promptTemplate === "string" ? input.promptTemplate : "";
+  return legacyTemplate.trim() && legacyTemplate !== fallbackPromptTemplate ? "custom" : "auto";
+}
+
+function normalizePromptTemplate(input: Partial<LocalTranslatorSettings>): string {
+  const template = typeof input.promptTemplate === "string" ? input.promptTemplate : "";
+  if (normalizePromptTemplateMode(input) === "auto") {
+    // 自动模式下保留文本,方便用户切回自定义时继续编辑。
+    return template;
+  }
+  return template.trim() ? template : fallbackPromptTemplate;
 }
 
 function normalizeTextStyle(value: unknown): TranslationTextStyle {

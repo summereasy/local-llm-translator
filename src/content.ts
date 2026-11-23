@@ -1,4 +1,6 @@
 import { loadSettings, type LocalTranslatorSettings } from "./shared/settings";
+import { promptScopeKey } from "./shared/modelPresets";
+import { looksUntranslated } from "./shared/textCheck";
 import type {
   GetCommandShortcutResponse,
   LocalTranslatorRequest,
@@ -351,6 +353,7 @@ async function translateBlockBatch(
         failedElements.add(element);
         return;
       }
+      warnUnchangedTranslation(settings, uncachedItem?.text ?? "", translated);
       const restored = restoreTranslationTokens(translated, uncachedItem?.tokens ?? []);
       setCache(uncachedItem?.cacheKey ?? "", restored);
       shell && completeBlockTranslation(shell, restored, settings);
@@ -705,6 +708,37 @@ function restoreBlock(block: TranslatedBlock): void {
   translatedBlocks = translatedBlocks.filter((item) => item !== block);
 }
 
+const warnedUnchangedModels = new Set<string>();
+
+function selectionHint(
+  settings: LocalTranslatorSettings,
+  source: string,
+  translated: string
+): string | undefined {
+  if (!looksUntranslated(source, translated, settings.targetLanguage)) {
+    return undefined;
+  }
+  return "译文看起来和原文一样。这个模型可能需要专用 Prompt:设置 → Prompt → 关闭“自动匹配”后自定义。";
+}
+
+function warnUnchangedTranslation(
+  settings: LocalTranslatorSettings,
+  source: string,
+  translated: string
+): void {
+  if (!looksUntranslated(source, translated, settings.targetLanguage)) {
+    return;
+  }
+  const key = `${settings.model}\u001f${settings.targetLanguage}`;
+  if (warnedUnchangedModels.has(key)) {
+    return;
+  }
+  warnedUnchangedModels.add(key);
+  console.warn(
+    `[local-llm-translator] ${settings.model} 的输出看起来没有翻译。若该模型要求裸文本或专用模板,请在设置里关闭“自动匹配”并填写自定义 Prompt。`
+  );
+}
+
 async function translateSelection(): Promise<void> {
   const selection = window.getSelection();
   const text = selection?.toString().trim() ?? "";
@@ -716,7 +750,9 @@ async function translateSelection(): Promise<void> {
   const anchor = selectionAnchorFromRect(rect);
   showPanel("翻译中...", anchor);
   try {
-    showPanel(await translateText(text), anchor);
+    const settings = await loadSettings();
+    const translated = await translateText(text);
+    showPanel(translated, anchor, selectionHint(settings, text, translated));
   } catch (error) {
     showPanel(error instanceof Error ? error.message : String(error), anchor);
   }
@@ -800,7 +836,7 @@ async function refreshSelectionShortcutLabel(): Promise<void> {
   }
 }
 
-function showPanel(text: string, anchor?: SelectionAnchor): void {
+function showPanel(text: string, anchor?: SelectionAnchor, note?: string): void {
   hidePanel();
   const box = document.createElement("div");
   box.className = "local-translator-panel";
@@ -814,11 +850,20 @@ function showPanel(text: string, anchor?: SelectionAnchor): void {
     body.textContent = text;
   }
 
+  box.append(body);
+
+  if (note) {
+    const noteElement = document.createElement("div");
+    noteElement.className = "local-translator-panel-note";
+    noteElement.textContent = note;
+    box.append(noteElement);
+  }
+
   const footer = document.createElement("div");
   footer.className = "local-translator-panel-footer";
   footer.textContent = "Local LLM Translator";
 
-  box.append(body, footer);
+  box.append(footer);
   panel = box;
   document.documentElement.append(box);
 
@@ -1184,7 +1229,7 @@ function getCacheKey(settings: LocalTranslatorSettings, text: string): string {
     settings.baseUrl,
     settings.model,
     settings.targetLanguage,
-    settings.promptTemplate,
+    promptScopeKey(settings),
     hashText(text)
   ];
   return scope.join("\u001f");
