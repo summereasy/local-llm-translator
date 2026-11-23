@@ -102,7 +102,8 @@ async function translateWithOpenAICompatible(settings: LocalTranslatorSettings, 
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(settings.apiKey ? { authorization: `Bearer ${settings.apiKey}` } : {})
+      ...(settings.apiKey ? { authorization: `Bearer ${settings.apiKey}` } : {}),
+      ...backendCacheHeaders(settings)
     },
     body: JSON.stringify({
       model: settings.model,
@@ -131,7 +132,8 @@ async function translateBatchWithOpenAICompatible(settings: LocalTranslatorSetti
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(settings.apiKey ? { authorization: `Bearer ${settings.apiKey}` } : {})
+      ...(settings.apiKey ? { authorization: `Bearer ${settings.apiKey}` } : {}),
+      ...backendCacheHeaders(settings)
     },
     body: JSON.stringify({
       model: settings.model,
@@ -220,6 +222,14 @@ function renderPrompt(settings: LocalTranslatorSettings, text: string): string {
   })
     .replaceAll("{{targetLanguage}}", settings.targetLanguage)
     .replaceAll("{{text}}", text);
+}
+
+/**
+ * 翻译是一次性请求,前缀命中率接近 0,写缓存只会占磁盘并挤掉其他会话的 hot cache。
+ * oMLX 只认 HTTP header,`off` 只关写入、不关读取;其他后端会忽略这个未知 header。
+ */
+function backendCacheHeaders(settings: LocalTranslatorSettings): Record<string, string> {
+  return settings.disableBackendCache ? { "X-oMLX-Cache-Store": "off" } : {};
 }
 
 /** 需要 chat_template_kwargs 的模型(如 PLaMo)把目标语言当请求参数下发。 */

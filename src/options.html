@@ -166,6 +166,13 @@
               </span>
               <input id="autoPromptTemplate" type="checkbox" checked />
             </label>
+            <label class="switch-row">
+              <span>
+                <strong>禁用后端 KV 缓存</strong>
+                <small>翻译是一次性请求, 缓存几乎不会被复用。开启后请求带上 X-oMLX-Cache-Store: off, oMLX 不再写入 hot cache 和 SSD。其他后端会忽略该 header</small>
+              </span>
+              <input id="disableBackendCache" type="checkbox" checked />
+            </label>
             <label class="stack-label">
               <span>
                 <strong>Prompt</strong>

@@ -26,6 +26,8 @@ export type LocalTranslatorSettings = {
   translationMode: TranslationMode;
   translationTextStyle: TranslationTextStyle;
   enableSelectionButton: boolean;
+  /** 请求头里声明后端不要写 KV 缓存(目前只有 oMLX 认这个 header)。 */
+  disableBackendCache: boolean;
   maxConcurrentRequests: number;
   batchSize: number;
 };
@@ -41,6 +43,7 @@ export const defaultSettings: LocalTranslatorSettings = {
   translationMode: "bilingual",
   translationTextStyle: "muted",
   enableSelectionButton: true,
+  disableBackendCache: true,
   maxConcurrentRequests: 8,
   batchSize: 1
 };
@@ -95,6 +98,10 @@ function normalizeSettings(value: unknown): LocalTranslatorSettings {
     promptTemplateMode: normalizePromptTemplateMode(input),
     translationMode: input.translationMode === "replace" ? "replace" : "bilingual",
     translationTextStyle: normalizeTextStyle(input.translationTextStyle),
+    disableBackendCache:
+      typeof input.disableBackendCache === "boolean"
+        ? input.disableBackendCache
+        : defaultSettings.disableBackendCache,
     enableSelectionButton:
       typeof input.enableSelectionButton === "boolean"
         ? input.enableSelectionButton
