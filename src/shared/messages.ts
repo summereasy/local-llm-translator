@@ -50,6 +50,38 @@ export type LocalTranslatorRequest =
   | GetPageStateRequest
   | GetCommandShortcutRequest;
 
+/** 极速模式的流式通道: content script 每批翻译建一个 Port, 逐 token 推送 delta。 */
+export const streamPortName = "local-translator-stream";
+
+export type StreamTranslateRequest = {
+  type: "stream-translate";
+  texts: string[];
+};
+
+export type StreamDeltaEvent = {
+  type: "stream-delta";
+  index: number;
+  delta: string;
+};
+
+export type StreamDoneEvent = {
+  type: "stream-done";
+  index: number;
+  text: string;
+};
+
+export type StreamErrorEvent = {
+  type: "stream-error";
+  index: number;
+  error: string;
+};
+
+export type StreamPortMessage =
+  | StreamTranslateRequest
+  | StreamDeltaEvent
+  | StreamDoneEvent
+  | StreamErrorEvent;
+
 export type TranslateTextResponse =
   | {
       ok: true;

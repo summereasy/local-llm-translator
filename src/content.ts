@@ -5,9 +5,11 @@ import type {
   GetCommandShortcutResponse,
   LocalTranslatorRequest,
   PageTranslationState,
+  StreamPortMessage,
   TranslateTextResponse,
   TranslateTextsResponse
 } from "./shared/messages";
+import { streamPortName } from "./shared/messages";
 
 const ignoredSelector = [
   "header",
@@ -85,6 +87,8 @@ type TranslatedBlock = {
   originalClassName: string;
   wrapper: HTMLElement;
   result: HTMLElement;
+  /** 极速模式: 上次流式上屏时间,用于节流。 */
+  streamRenderAt?: number;
 };
 
 type SelectionAnchor = {
@@ -221,12 +225,17 @@ async function togglePageTranslation(): Promise<void> {
   pageActive = true;
   runId += 1;
   setupLiveTranslationListeners();
+  // 首次触发不吃防抖,按下快捷键立刻开翻。
+  scheduleVisibleTranslation(true);
+}
+
+function onViewportChange(): void {
   scheduleVisibleTranslation();
 }
 
 function setupLiveTranslationListeners(): void {
-  window.addEventListener("scroll", scheduleVisibleTranslation, { passive: true });
-  window.addEventListener("resize", scheduleVisibleTranslation, { passive: true });
+  window.addEventListener("scroll", onViewportChange, { passive: true });
+  window.addEventListener("resize", onViewportChange, { passive: true });
 
   mutationObserver?.disconnect();
   mutationObserver = new MutationObserver(() => {
@@ -240,8 +249,8 @@ function setupLiveTranslationListeners(): void {
 }
 
 function stopLiveTranslationListeners(): void {
-  window.removeEventListener("scroll", scheduleVisibleTranslation);
-  window.removeEventListener("resize", scheduleVisibleTranslation);
+  window.removeEventListener("scroll", onViewportChange);
+  window.removeEventListener("resize", onViewportChange);
   mutationObserver?.disconnect();
   mutationObserver = null;
   if (scheduled) {
@@ -250,7 +259,15 @@ function stopLiveTranslationListeners(): void {
   }
 }
 
-function scheduleVisibleTranslation(): void {
+function scheduleVisibleTranslation(immediate = false): void {
+  if (immediate) {
+    if (scheduled) {
+      window.clearTimeout(scheduled);
+      scheduled = 0;
+    }
+    void translateVisibleBlocks();
+    return;
+  }
   if (scheduled || !pageActive) {
     return;
   }
@@ -343,7 +360,33 @@ async function translateBlockBatch(
     }
   }
   try {
-    const translatedTexts = await translateTexts(requestTexts);
+    let translatedTexts: string[] | null = null;
+    let streamedAnyRender = false;
+    if (settings.turboMode && settings.backendKind === "openai-compatible") {
+      try {
+        translatedTexts = await streamTranslateTexts(requestTexts, (index, partial) => {
+          const element = requestElements[index];
+          if (!element) {
+            return;
+          }
+          const shell = shells.get(element);
+          if (!shell || !pageActive || currentRunId !== runId) {
+            return;
+          }
+          streamedAnyRender = true;
+          renderStreamingText(shell, partial);
+        });
+      } catch (streamError) {
+        if (streamedAnyRender) {
+          // 译文已经上屏到一半,断流按整批失败处理,与既有错误路径一致。
+          throw streamError;
+        }
+        console.debug("[local-llm-translator] streaming unavailable, falling back", streamError);
+      }
+    }
+    if (!translatedTexts) {
+      translatedTexts = await translateTexts(requestTexts);
+    }
     requestElements.forEach((element, index) => {
       const translated = translatedTexts[index];
       const shell = shells.get(element);
@@ -385,7 +428,7 @@ function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
   const candidates = dedupeNestedBlocks([...siteSpecific, ...preferred]);
 
   if (candidates.length > 0) {
-    return candidates.slice(0, settings.maxConcurrentRequests * 3);
+    return prioritizeByViewport(candidates).slice(0, settings.maxConcurrentRequests * 3);
   }
 
   const fallback = dedupeNestedBlocks(
@@ -393,7 +436,19 @@ function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
       .filter((element) => isLeafLikeBlock(element))
       .filter((element) => shouldTranslateElement(element, settings))
   );
-  return fallback.slice(0, settings.maxConcurrentRequests * 3);
+  return prioritizeByViewport(fallback).slice(0, settings.maxConcurrentRequests * 3);
+}
+
+/**
+ * DOM 顺序不等于视觉顺序。按视口位置排序后再截断,保证首批请求优先
+ * 覆盖首屏段落,而不是被页脚之类的后置内容占满并发额度。
+ */
+function prioritizeByViewport(elements: Element[]): Element[] {
+  const tops = new Map<Element, number>();
+  for (const element of elements) {
+    tops.set(element, element.getBoundingClientRect().top);
+  }
+  return [...elements].sort((a, b) => (tops.get(a) ?? 0) - (tops.get(b) ?? 0));
 }
 
 function queryContentRoots(selector: string): Element[] {
@@ -793,6 +848,109 @@ async function translateTexts(texts: string[]): Promise<string[]> {
     throw new Error(response.error);
   }
   return response.texts;
+}
+
+/**
+ * 极速模式: 每批翻译建一个长连 Port,后台 stream:true 拉取并逐 token 推回。
+ * onDelta 收到的是该段"到目前为止"的完整文本;建流/中途失败由调用方回落。
+ */
+function streamTranslateTexts(
+  texts: string[],
+  onDelta: (index: number, partialText: string) => void
+): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    let port: chrome.runtime.Port;
+    try {
+      port = chrome.runtime.connect({ name: streamPortName });
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error("无法建立流式连接"));
+      return;
+    }
+
+    const results = new Array<string>(texts.length).fill("");
+    const settled = new Array<boolean>(texts.length).fill(false);
+    let firstError: Error | null = null;
+    let finished = false;
+
+    const finish = () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      port.onMessage.removeListener(listener);
+      try {
+        port.disconnect();
+      } catch {
+        // 对端已关。
+      }
+      if (firstError) {
+        reject(firstError);
+      } else {
+        resolve(results);
+      }
+    };
+
+    const maybeFinish = () => {
+      if (settled.every(Boolean)) {
+        finish();
+      }
+    };
+
+    const listener = (message: StreamPortMessage) => {
+      if (message.type === "stream-delta") {
+        if (!settled[message.index]) {
+          results[message.index] += message.delta;
+          onDelta(message.index, results[message.index] ?? "");
+        }
+        return;
+      }
+      if (message.type === "stream-done") {
+        results[message.index] = message.text;
+        settled[message.index] = true;
+        onDelta(message.index, message.text);
+        maybeFinish();
+        return;
+      }
+      if (message.type === "stream-error") {
+        settled[message.index] = true;
+        if (!firstError) {
+          firstError = new Error(message.error);
+        }
+        maybeFinish();
+      }
+    };
+
+    port.onMessage.addListener(listener);
+    port.onDisconnect.addListener(() => {
+      if (finished) {
+        return;
+      }
+      if (!firstError) {
+        firstError = new Error("流式连接中断");
+      }
+      settled.fill(true);
+      finish();
+    });
+
+    try {
+      port.postMessage({ type: "stream-translate", texts });
+    } catch (error) {
+      firstError = error instanceof Error ? error : new Error("流式请求发送失败");
+      settled.fill(true);
+      finish();
+    }
+  });
+}
+
+/** 流式期间把部分译文写进壳层;按块节流,避免每个 token 都动 DOM。 */
+function renderStreamingText(block: TranslatedBlock, partial: string): void {
+  const now = performance.now();
+  if (block.streamRenderAt !== undefined && now - block.streamRenderAt < 50) {
+    return;
+  }
+  block.streamRenderAt = now;
+  block.result.className = "local-translator-result local-translator-streaming";
+  block.result.textContent = partial;
 }
 
 async function showSelectionButton(text: string, anchor: SelectionAnchor): Promise<void> {

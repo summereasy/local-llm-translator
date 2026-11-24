@@ -7,11 +7,14 @@ import {
   resolveTemperature
 } from "./shared/modelPresets";
 import { formatCommandShortcut } from "./shared/shortcuts";
-import type {
-  GetCommandShortcutResponse,
-  LocalTranslatorRequest,
-  TranslateTextResponse,
-  TranslateTextsResponse
+import { SseAccumulator, extractDeltaContent } from "./shared/sse";
+import {
+  streamPortName,
+  type GetCommandShortcutResponse,
+  type LocalTranslatorRequest,
+  type StreamPortMessage,
+  type TranslateTextResponse,
+  type TranslateTextsResponse
 } from "./shared/messages";
 
 chrome.commands.onCommand.addListener((command) => {
@@ -64,6 +67,134 @@ async function sendToActiveTab(message: LocalTranslatorRequest): Promise<void> {
     return;
   }
   await chrome.tabs.sendMessage(tab.id, message);
+}
+
+/**
+ * 极速模式的流式通道: 每批翻译一个 Port,后端 stream:true 逐 token 推给
+ * content script 渐进渲染。建流失败时 content 侧自动回落整段返回。
+ */
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== streamPortName) {
+    return;
+  }
+  port.onMessage.addListener((message: StreamPortMessage) => {
+    if (message.type === "stream-translate") {
+      void handleStreamTranslate(port, message.texts);
+    }
+  });
+});
+
+async function handleStreamTranslate(port: chrome.runtime.Port, texts: string[]): Promise<void> {
+  const settings = await loadSettings();
+  if (settings.backendKind !== "openai-compatible") {
+    texts.forEach((_, index) =>
+      postToPort(port, { type: "stream-error", index, error: "Ollama 后端不支持流式,请关闭极速模式。" })
+    );
+    return;
+  }
+
+  try {
+    assertBackendSupportsPreset(settings);
+  } catch (error) {
+    texts.forEach((_, index) =>
+      postToPort(port, { type: "stream-error", index, error: errorMessage(error) })
+    );
+    return;
+  }
+
+  let cursor = 0;
+  const workerCount = Math.min(settings.maxConcurrentRequests, texts.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= texts.length) {
+        return;
+      }
+      try {
+        const text = texts[index] ?? "";
+        const translated = await streamTranslateOne(settings, text, (delta) =>
+          postToPort(port, { type: "stream-delta", index, delta })
+        );
+        postToPort(port, { type: "stream-done", index, text: translated });
+      } catch (error) {
+        postToPort(port, { type: "stream-error", index, error: errorMessage(error) });
+      }
+    }
+  });
+  await Promise.all(workers);
+}
+
+function postToPort(port: chrome.runtime.Port, message: StreamPortMessage): void {
+  try {
+    port.postMessage(message);
+  } catch {
+    // 页面侧已断开(导航/关闭),剩余结果丢弃。
+  }
+}
+
+async function streamTranslateOne(
+  settings: LocalTranslatorSettings,
+  text: string,
+  onDelta: (delta: string) => void
+): Promise<string> {
+  if (!settings.model) {
+    throw new Error("请先在设置里填写模型名。");
+  }
+
+  const response = await fetch(openAIChatCompletionsUrl(settings.baseUrl), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(settings.apiKey ? { authorization: `Bearer ${settings.apiKey}` } : {}),
+      ...backendCacheHeaders(settings)
+    },
+    body: JSON.stringify({
+      model: settings.model,
+      messages: [
+        {
+          role: "user",
+          content: renderPrompt(settings, text)
+        }
+      ],
+      ...chatTemplateKwargsBody(settings),
+      temperature: resolveTemperature(settings.model),
+      stream: true
+    })
+  });
+
+  if (!response.ok || !response.body) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`本地服务请求失败: HTTP ${response.status} ${body.slice(0, 300)}`);
+  }
+
+  const accumulator = new SseAccumulator();
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let result = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    for (const data of accumulator.push(decoder.decode(value, { stream: true }))) {
+      if (data === "[DONE]") {
+        continue;
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      const delta = extractDeltaContent(payload);
+      if (delta) {
+        result += delta;
+        onDelta(delta);
+      }
+    }
+  }
+  return result.trim();
 }
 
 async function translateText(text: string): Promise<string> {

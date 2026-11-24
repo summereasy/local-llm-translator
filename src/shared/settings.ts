@@ -28,6 +28,8 @@ export type LocalTranslatorSettings = {
   enableSelectionButton: boolean;
   /** 请求头里声明后端不要写 KV 缓存(目前只有 oMLX 认这个 header)。 */
   disableBackendCache: boolean;
+  /** 极速模式: 流式渐进渲染 + 首屏优先。Ollama 后端或建流失败时自动回落整段返回。 */
+  turboMode: boolean;
   maxConcurrentRequests: number;
   batchSize: number;
 };
@@ -44,6 +46,7 @@ export const defaultSettings: LocalTranslatorSettings = {
   translationTextStyle: "muted",
   enableSelectionButton: true,
   disableBackendCache: true,
+  turboMode: true,
   maxConcurrentRequests: 8,
   batchSize: 1
 };
@@ -102,6 +105,8 @@ export function normalizeSettings(value: unknown): LocalTranslatorSettings {
       typeof input.disableBackendCache === "boolean"
         ? input.disableBackendCache
         : defaultSettings.disableBackendCache,
+    turboMode:
+      typeof input.turboMode === "boolean" ? input.turboMode : defaultSettings.turboMode,
     enableSelectionButton:
       typeof input.enableSelectionButton === "boolean"
         ? input.enableSelectionButton
