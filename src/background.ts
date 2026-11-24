@@ -7,7 +7,7 @@ import {
   resolveTemperature
 } from "./shared/modelPresets";
 import { formatCommandShortcut } from "./shared/shortcuts";
-import { SseAccumulator, extractDeltaContent } from "./shared/sse";
+import { SseAccumulator, StreamDeltaAssembler } from "./shared/sse";
 import {
   streamPortName,
   type GetCommandShortcutResponse,
@@ -183,32 +183,9 @@ async function streamTranslateOne(
   }
 
   const accumulator = new SseAccumulator();
+  const assembler = new StreamDeltaAssembler();
   const decoder = new TextDecoder();
   const reader = response.body.getReader();
-  let result = "";
-  let sawDataEvent = false;
-  const consume = (data: string): void => {
-    if (data === "[DONE]") {
-      sawDataEvent = true;
-      return;
-    }
-    let payload: unknown;
-    try {
-      payload = JSON.parse(data);
-    } catch {
-      return;
-    }
-    const apiError = (payload as { error?: { message?: unknown } } | null)?.error?.message;
-    if (typeof apiError === "string" && apiError) {
-      throw new Error(`本地服务流式返回错误: ${apiError}`);
-    }
-    const delta = extractDeltaContent(payload);
-    if (delta) {
-      sawDataEvent = true;
-      result += delta;
-      onDelta(delta);
-    }
-  };
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -216,19 +193,37 @@ async function streamTranslateOne(
         break;
       }
       for (const data of accumulator.push(decoder.decode(value, { stream: true }))) {
-        consume(data);
+        if (assembler.consume(data, onDelta)) {
+          // 已收到 [DONE]:正常结束信号到了,不再等响应体 EOF。
+          return finishStream(assembler);
+        }
+      }
+      if (assembler.done) {
+        return finishStream(assembler);
       }
     }
     for (const data of [...accumulator.push(decoder.decode()), ...accumulator.flush()]) {
-      consume(data);
+      if (assembler.consume(data, onDelta)) {
+        break;
+      }
     }
   } finally {
-    reader.releaseLock?.();
+    // 结束信号已到或对端不再发数据,主动放弃剩余响应体。
+    await reader.cancel().catch(() => {});
   }
-  if (!sawDataEvent) {
-    throw new Error("流式响应里没有任何事件,已回落整段请求。");
+  const finished = assembler.finish();
+  if (!finished.ok) {
+    throw new Error(finished.reason);
   }
-  return result.trim();
+  return finished.text;
+}
+
+function finishStream(assembler: StreamDeltaAssembler): string {
+  const finished = assembler.finish();
+  if (!finished.ok) {
+    throw new Error(finished.reason);
+  }
+  return finished.text;
 }
 
 async function translateText(text: string): Promise<string> {

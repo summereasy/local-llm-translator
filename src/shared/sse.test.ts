@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractDeltaContent, SseAccumulator } from "./sse";
+import { extractDeltaContent, SseAccumulator, StreamDeltaAssembler } from "./sse";
 
 describe("SseAccumulator", () => {
   test("returns complete events from a single chunk", () => {
@@ -53,6 +53,62 @@ describe("SseAccumulator", () => {
     }
     events.push(...acc.push(decoder.decode()));
     expect(events).toEqual(['{"x":"流式翻译"}', "[DONE]"]);
+  });
+});
+
+describe("StreamDeltaAssembler", () => {
+  const chunk = (text: string) =>
+    JSON.stringify({ choices: [{ delta: { content: text } }] });
+
+  test("normal stream: deltas then [DONE] resolves the full text", () => {
+    const a = new StreamDeltaAssembler();
+    const deltas: string[] = [];
+    expect(a.consume(chunk("你好"), (d) => deltas.push(d))).toBe(false);
+    expect(a.consume(chunk(",世界"), (d) => deltas.push(d))).toBe(false);
+    expect(a.consume("[DONE]")).toBe(true);
+    expect(deltas).toEqual(["你好", ",世界"]);
+    expect(a.finish()).toEqual({ ok: true, text: "你好,世界" });
+  });
+
+  test("delta then EOF without [DONE]: premature cut is an error, not success", () => {
+    const a = new StreamDeltaAssembler();
+    a.consume(chunk("半截译文"));
+    const finished = a.finish();
+    expect(finished.ok).toBe(false);
+    if (!finished.ok) {
+      expect(finished.reason).toContain("提前切断");
+    }
+  });
+
+  test("[DONE] only with no deltas: empty stream is an error that enables fallback", () => {
+    const a = new StreamDeltaAssembler();
+    expect(a.consume("[DONE]")).toBe(true);
+    const finished = a.finish();
+    expect(finished.ok).toBe(false);
+    if (!finished.ok) {
+      expect(finished.reason).toContain("为空");
+    }
+  });
+
+  test("[DONE] stops consumption: caller need not wait for body EOF", () => {
+    const a = new StreamDeltaAssembler();
+    a.consume(chunk("完整"));
+    expect(a.done).toBe(false);
+    a.consume("[DONE]");
+    expect(a.done).toBe(true);
+    // 结束信号之后到达的任何事件都不再影响结果。
+    a.consume(chunk("迟到的多余数据"));
+    expect(a.finish()).toEqual({ ok: true, text: "完整" });
+  });
+
+  test("payload error is surfaced", () => {
+    const a = new StreamDeltaAssembler();
+    a.consume(JSON.stringify({ error: { message: "model overloaded" } }));
+    const finished = a.finish();
+    expect(finished.ok).toBe(false);
+    if (!finished.ok) {
+      expect(finished.reason).toContain("model overloaded");
+    }
   });
 });
 

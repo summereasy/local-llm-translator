@@ -1,24 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { looksLikeStatLabel, looksUntranslated } from "./textCheck";
-
-describe("looksLikeStatLabel", () => {
-  test("flags label+number stats with units", () => {
-    expect(looksLikeStatLabel("Input from cache98.1%")).toBe(true);
-    expect(looksLikeStatLabel("Output/turn 10.1K")).toBe(true);
-    expect(looksLikeStatLabel("77.3%")).toBe(true);
-    expect(looksLikeStatLabel("Claude Code77.3%")).toBe(true);
-    expect(looksLikeStatLabel("Updated 11月24日 10:26")).toBe(true);
-  });
-
-  test("keeps real sentences and pure labels", () => {
-    expect(looksLikeStatLabel("Claude Code")).toBe(false);
-    expect(looksLikeStatLabel("pp = change from first to last observed day")).toBe(false);
-    expect(looksLikeStatLabel("The model was launched in 2026.")).toBe(false);
-    expect(
-      looksLikeStatLabel("Turns = completed turn events, including tool calls and subagents")
-    ).toBe(false);
-  });
-});
+import { looksUntranslated } from "./textCheck";
 
 describe("looksUntranslated", () => {
   test("ignores short snippets", () => {

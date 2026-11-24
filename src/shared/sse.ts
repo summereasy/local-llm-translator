@@ -62,3 +62,69 @@ export function extractDeltaContent(payload: unknown): string {
   const content = (choice as { delta?: { content?: unknown } } | null)?.delta?.content;
   return typeof content === "string" ? content : "";
 }
+
+export type StreamFinish =
+  | { ok: true; text: string }
+  | { ok: false; reason: string };
+
+/**
+ * 组装一条流式翻译:喂入每个 SSE 事件的 data 载荷,结束时用 finish() 判定。
+ *
+ * 必须区分"正常结束信号"([DONE])与"响应体 EOF":
+ * - 只有 delta 就 EOF → 流被提前切断,半截译文不能当成功结果;
+ * - 只发 [DONE] 没有任何 delta → 空译文,走错误路径触发整段回落;
+ * - 收到 [DONE] → 正常完成,不再依赖后续 EOF。
+ */
+export class StreamDeltaAssembler {
+  private result = "";
+  private sawDone = false;
+  private sawContent = false;
+  private apiError: string | null = null;
+
+  /** 喂入一个事件的 data 载荷;返回 true 表示已收到结束信号,可以停止读流。 */
+  consume(data: string, onDelta?: (delta: string) => void): boolean {
+    if (this.sawDone) {
+      // 结束信号已到:之后到达的任何事件(迟到数据/多余心跳)一律忽略。
+      return true;
+    }
+    if (data === "[DONE]") {
+      this.sawDone = true;
+      return true;
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(data);
+    } catch {
+      return false;
+    }
+    const error = (payload as { error?: { message?: unknown } } | null)?.error?.message;
+    if (typeof error === "string" && error) {
+      this.apiError = this.apiError ?? error;
+      return false;
+    }
+    const delta = extractDeltaContent(payload);
+    if (delta) {
+      this.sawContent = true;
+      this.result += delta;
+      onDelta?.(delta);
+    }
+    return false;
+  }
+
+  get done(): boolean {
+    return this.sawDone;
+  }
+
+  finish(): StreamFinish {
+    if (this.apiError) {
+      return { ok: false, reason: `本地服务流式返回错误: ${this.apiError}` };
+    }
+    if (!this.sawDone) {
+      return { ok: false, reason: "流被提前切断(缺少结束信号),不采用半截译文。" };
+    }
+    if (!this.sawContent) {
+      return { ok: false, reason: "流式响应为空,已回落整段请求。" };
+    }
+    return { ok: true, text: this.result.trim() };
+  }
+}
