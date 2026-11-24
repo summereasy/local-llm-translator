@@ -83,7 +83,7 @@ export async function saveSettings(settings: LocalTranslatorSettings): Promise<v
   await chrome.storage.sync.set({ [settingsKey]: normalizeSettings(settings) });
 }
 
-function normalizeSettings(value: unknown): LocalTranslatorSettings {
+export function normalizeSettings(value: unknown): LocalTranslatorSettings {
   const input = typeof value === "object" && value !== null ? (value as Partial<LocalTranslatorSettings>) : {};
   return {
     backendKind: input.backendKind === "ollama" ? "ollama" : "openai-compatible",

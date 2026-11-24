@@ -1,8 +1,10 @@
 import { loadSettings, type LocalTranslatorSettings } from "./shared/settings";
 import {
+  backendCompatibilityError,
+  presetSupportsBatchPrompt,
   resolveChatTemplateKwargs,
-  resolveModelPreset,
-  resolvePromptTemplate
+  resolvePromptTemplate,
+  resolveTemperature
 } from "./shared/modelPresets";
 import { formatCommandShortcut } from "./shared/shortcuts";
 import type {
@@ -80,10 +82,11 @@ async function translateTexts(texts: string[]): Promise<string[]> {
 
   if (inputs.length === 1) {
     const input = inputs[0] ?? "";
-    if (settings.backendKind === "ollama") {
-      return [await translateWithOllama(settings, input)];
-    }
-    return [await translateWithOpenAICompatible(settings, input)];
+    return [await translateSingle(settings, input)];
+  }
+
+  if (!presetSupportsBatchPrompt(settings.model)) {
+    return Promise.all(inputs.map((input) => translateSingle(settings, input)));
   }
 
   if (settings.backendKind === "ollama") {
@@ -91,6 +94,13 @@ async function translateTexts(texts: string[]): Promise<string[]> {
   }
 
   return translateBatchWithOpenAICompatible(settings, inputs);
+}
+
+async function translateSingle(settings: LocalTranslatorSettings, input: string): Promise<string> {
+  if (settings.backendKind === "ollama") {
+    return translateWithOllama(settings, input);
+  }
+  return translateWithOpenAICompatible(settings, input);
 }
 
 async function translateWithOpenAICompatible(settings: LocalTranslatorSettings, text: string): Promise<string> {
@@ -114,7 +124,7 @@ async function translateWithOpenAICompatible(settings: LocalTranslatorSettings, 
         }
       ],
       ...chatTemplateKwargsBody(settings),
-      temperature: 0.2,
+      temperature: resolveTemperature(settings.model),
       stream: false
     })
   });
@@ -144,7 +154,7 @@ async function translateBatchWithOpenAICompatible(settings: LocalTranslatorSetti
         }
       ],
       ...chatTemplateKwargsBody(settings),
-      temperature: 0.2,
+      temperature: resolveTemperature(settings.model),
       stream: false
     })
   });
@@ -236,19 +246,15 @@ function backendCacheHeaders(settings: LocalTranslatorSettings): Record<string, 
 function chatTemplateKwargsBody(settings: LocalTranslatorSettings): Record<string, unknown> {
   const kwargs = resolveChatTemplateKwargs({
     model: settings.model,
-    targetLanguage: settings.targetLanguage,
-    promptTemplate: settings.promptTemplate,
-    promptTemplateMode: settings.promptTemplateMode
+    targetLanguage: settings.targetLanguage
   });
   return kwargs ? { chat_template_kwargs: kwargs } : {};
 }
 
 function assertBackendSupportsPreset(settings: LocalTranslatorSettings): void {
-  const preset = resolveModelPreset(settings.model);
-  if (preset?.requiresOpenAICompatible && settings.backendKind === "ollama") {
-    throw new Error(
-      `${preset.label} 需要 chat_template_kwargs 传目标语言,Ollama 接口不支持。请把 API 类型切换为 OpenAI-compatible。`
-    );
+  const error = backendCompatibilityError(settings.model, settings.backendKind);
+  if (error) {
+    throw new Error(error);
   }
 }
 

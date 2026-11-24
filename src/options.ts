@@ -7,7 +7,12 @@ import {
   type TranslationMode,
   type TranslationTextStyle
 } from "./shared/settings";
-import { describePromptResolution, resolvePromptTemplate } from "./shared/modelPresets";
+import {
+  backendCompatibilityError,
+  describePromptResolution,
+  fallbackPromptTemplate,
+  resolvePromptTemplate
+} from "./shared/modelPresets";
 
 const form = mustGet<HTMLFormElement>("settingsForm");
 const backendKind = mustGet<HTMLSelectElement>("backendKind");
@@ -27,6 +32,7 @@ const openShortcutsPage = mustGet<HTMLButtonElement>("openShortcutsPage");
 const status = mustGet<HTMLElement>("status");
 
 let saveTimer = 0;
+let customPromptDraft = "";
 
 void loadSettings().then((settings) => {
   backendKind.value = settings.backendKind;
@@ -34,6 +40,7 @@ void loadSettings().then((settings) => {
   apiKey.value = settings.apiKey;
   model.value = settings.model;
   targetLanguage.value = settings.targetLanguage;
+  customPromptDraft = settings.promptTemplate;
   promptTemplate.value = settings.promptTemplate;
   autoPromptTemplate.checked = settings.promptTemplateMode !== "custom";
   translationMode.value = settings.translationMode;
@@ -50,12 +57,19 @@ backendKind.addEventListener("change", () => {
   if (backendKind.value === "ollama" && baseUrl.value === defaultSettings.baseUrl) {
     baseUrl.value = "http://127.0.0.1:11434";
   }
+  updatePromptHint();
 });
 
 translationMode.addEventListener("change", updateStyleAvailability);
 autoPromptTemplate.addEventListener("change", () => {
   updatePromptAvailability();
   updatePromptHint();
+});
+promptTemplate.addEventListener("input", () => {
+  if (!autoPromptTemplate.checked) {
+    customPromptDraft = promptTemplate.value;
+    updatePromptHint();
+  }
 });
 model.addEventListener("input", () => {
   updatePromptAvailability();
@@ -91,7 +105,7 @@ async function persistSettings(): Promise<void> {
     apiKey: apiKey.value,
     model: model.value,
     targetLanguage: targetLanguage.value,
-    promptTemplate: promptTemplate.value,
+    promptTemplate: customPromptDraft,
     promptTemplateMode: (autoPromptTemplate.checked ? "auto" : "custom") as PromptTemplateMode,
     translationMode: translationMode.value as TranslationMode,
     translationTextStyle: getSelectedStyle(),
@@ -105,9 +119,10 @@ async function persistSettings(): Promise<void> {
 
 function promptInput() {
   return {
+    backendKind: backendKind.value as BackendKind,
     model: model.value,
     targetLanguage: targetLanguage.value,
-    promptTemplate: promptTemplate.value,
+    promptTemplate: customPromptDraft,
     promptTemplateMode: (autoPromptTemplate.checked ? "auto" : "custom") as PromptTemplateMode
   };
 }
@@ -117,13 +132,21 @@ function updatePromptAvailability(): void {
   promptTemplate.disabled = auto;
   promptTemplate.classList.toggle("is-disabled", auto);
   if (auto) {
-    // 自动模式下把将要发送的模板当成预览显示出来,供用户对照。
+    // 自动模式下把将要发送的模板当成预览显示出来,不覆盖用户的自定义草稿。
     promptTemplate.value = resolvePromptTemplate(promptInput());
+  } else {
+    promptTemplate.value = customPromptDraft.trim() ? customPromptDraft : fallbackPromptTemplate;
+    customPromptDraft = promptTemplate.value;
   }
 }
 
 function updatePromptHint(): void {
-  promptTemplateHint.textContent = describePromptResolution(promptInput());
+  const input = promptInput();
+  promptTemplateHint.textContent = describePromptResolution(input);
+  promptTemplateHint.classList.toggle(
+    "is-warning",
+    Boolean(backendCompatibilityError(input.model, input.backendKind))
+  );
 }
 
 function updateStyleAvailability(): void {

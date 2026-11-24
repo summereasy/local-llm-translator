@@ -243,6 +243,18 @@ textarea {
   resize: vertical;
 }
 
+textarea:disabled,
+textarea.is-disabled {
+  background: #f6f8fa;
+  color: #6b7280;
+  cursor: not-allowed;
+}
+
+label small.is-warning {
+  color: #b45309;
+  font-weight: 500;
+}
+
 input[type="checkbox"] {
   justify-self: end;
   width: 48px;

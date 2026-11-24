@@ -362,6 +362,7 @@ async function translateBlockBatch(
   } catch (error) {
     shells.forEach((shell) => restoreBlock(shell));
     elements.forEach((element) => failedElements.add(element));
+    warnPageTranslationError(settings, error);
     console.debug("[local-llm-translator] translation failed", error);
   } finally {
     elements.forEach((element) => activeElements.delete(element));
@@ -709,6 +710,17 @@ function restoreBlock(block: TranslatedBlock): void {
 }
 
 const warnedUnchangedModels = new Set<string>();
+const warnedPageErrors = new Set<string>();
+
+function warnPageTranslationError(settings: LocalTranslatorSettings, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const key = `${settings.backendKind}\u001f${settings.model}\u001f${message}`;
+  if (warnedPageErrors.has(key)) {
+    return;
+  }
+  warnedPageErrors.add(key);
+  console.warn(`[local-llm-translator] ${message}`);
+}
 
 function selectionHint(
   settings: LocalTranslatorSettings,
@@ -718,7 +730,7 @@ function selectionHint(
   if (!looksUntranslated(source, translated, settings.targetLanguage)) {
     return undefined;
   }
-  return "译文看起来和原文一样。这个模型可能需要专用 Prompt:设置 → Prompt → 关闭“自动匹配”后自定义。";
+  return "译文看起来和原文一样。原文可能已是目标语言，或该模型需要专用 Prompt: 设置 → Prompt → 关闭“自动匹配”后自定义。";
 }
 
 function warnUnchangedTranslation(
@@ -729,7 +741,7 @@ function warnUnchangedTranslation(
   if (!looksUntranslated(source, translated, settings.targetLanguage)) {
     return;
   }
-  const key = `${settings.model}\u001f${settings.targetLanguage}`;
+  const key = `${settings.model}\u001f${settings.targetLanguage}\u001f${promptScopeKey(settings)}`;
   if (warnedUnchangedModels.has(key)) {
     return;
   }

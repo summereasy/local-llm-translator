@@ -61,9 +61,5 @@ export function looksUntranslated(
     return true;
   }
 
-  return (
-    cjkTargetLanguages.has(targetLanguage) &&
-    !cjkPattern.test(source) &&
-    !cjkPattern.test(translated)
-  );
+  return cjkTargetLanguages.has(targetLanguage) && !cjkPattern.test(translated);
 }
