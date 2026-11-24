@@ -1,6 +1,6 @@
 import { loadSettings, type LocalTranslatorSettings } from "./shared/settings";
 import { promptScopeKey } from "./shared/modelPresets";
-import { looksLikeStatLabel, looksUntranslated } from "./shared/textCheck";
+import { looksUntranslated } from "./shared/textCheck";
 import type {
   GetCommandShortcutResponse,
   LocalTranslatorRequest,
@@ -289,9 +289,16 @@ function scheduleVisibleTranslation(immediate = false): void {
 }
 
 let collectingBlocks = false;
+let needsViewportRescan = false;
 
 async function translateVisibleBlocks(): Promise<void> {
-  if (!pageActive || !document.body || collectingBlocks) {
+  if (!pageActive || !document.body) {
+    return;
+  }
+  if (collectingBlocks) {
+    // 批次进行中来了新视口(滚动/展开):记下,批次结束后按最新视口补扫一次,
+    // 否则要等用户再滚一下才会翻新内容。
+    needsViewportRescan = true;
     return;
   }
 
@@ -300,6 +307,10 @@ async function translateVisibleBlocks(): Promise<void> {
     await collectAndTranslate();
   } finally {
     collectingBlocks = false;
+    if (needsViewportRescan && pageActive) {
+      needsViewportRescan = false;
+      scheduleVisibleTranslation();
+    }
   }
 }
 
@@ -393,6 +404,7 @@ async function translateBlockBatch(
   try {
     let translatedTexts: string[] | null = null;
     let streamedAnyRender = false;
+    let abortedByCancel = false;
     if (settings.turboMode && settings.backendKind === "openai-compatible") {
       try {
         translatedTexts = await streamTranslateTexts(requestTexts, (index, partial) => {
@@ -412,12 +424,20 @@ async function translateBlockBatch(
           );
         });
       } catch (streamError) {
-        if (streamedAnyRender) {
+        if (!pageActive || currentRunId !== runId) {
+          // 用户已关闭或切换:请求被主动取消。不回落整段(那会背着用户继续
+          // 发请求)、不标记失败,壳已由 restorePage 还原,直接收尾。
+          abortedByCancel = true;
+        } else if (streamedAnyRender) {
           // 译文已经上屏到一半,断流按整批失败处理,与既有错误路径一致。
           throw streamError;
+        } else {
+          console.debug("[local-llm-translator] streaming unavailable, falling back", streamError);
         }
-        console.debug("[local-llm-translator] streaming unavailable, falling back", streamError);
       }
+    }
+    if (abortedByCancel) {
+      return;
     }
     if (!translatedTexts) {
       translatedTexts = await translateTexts(requestTexts);
@@ -462,7 +482,7 @@ async function translateBlockBatch(
 function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
   const preferred = dedupeNestedBlocks(
     queryContentRoots(preferredBlockSelector).filter((element) =>
-      shouldTranslateElement(element, settings)
+      shouldTranslateElement(element, settings, { includeLayoutFragile: true })
     )
   );
   const siteSpecific = dedupeNestedBlocks(
@@ -524,6 +544,8 @@ function dedupeNestedBlocks(elements: Element[]): Element[] {
 
 type TranslateElementOptions = {
   minTextLength?: number;
+  /** 收集阶段放行 flex/grid 容器,交给 expandLayoutFragile 下沉到子节点。 */
+  includeLayoutFragile?: boolean;
 };
 
 function shouldTranslateElement(
@@ -547,7 +569,9 @@ function shouldTranslateElement(
   if (isCompositeMetadataBlock(element)) {
     return false;
   }
-  if (isLayoutFragileContainer(element)) {
+  if (!options?.includeLayoutFragile && isLayoutFragileContainer(element)) {
+    // 默认拒绝;收集阶段用 includeLayoutFragile 放行进来,
+    // 由 expandLayoutFragile 换成可翻译的文本子节点。
     return false;
   }
   if (isYoutubeWatchChrome(element)) {
@@ -618,22 +642,38 @@ function isLayoutFragileContainer(element: Element): boolean {
   return element.children.length > 0;
 }
 
-/** flex/grid 容器下沉一层:把容器自身换成分别可翻译的文本子节点。 */
+/** flex/grid 容器下沉:把容器自身换成分别可翻译的文本子节点(flex 套 flex 递归,最多 3 层)。 */
 function expandLayoutFragile(
   elements: Element[],
   settings: LocalTranslatorSettings
 ): Element[] {
   const result: Element[] = [];
-  for (const element of elements) {
+  const visit = (element: Element, depth: number): void => {
     if (!isLayoutFragileContainer(element)) {
       result.push(element);
-      continue;
+      return;
+    }
+    if (depth <= 0) {
+      // flex 嵌套太深:放弃这块,宁可少翻一段不毁布局。
+      return;
     }
     for (const child of Array.from(element.children)) {
-      if (shouldTranslateElement(child, settings, { minTextLength: minCommentTextLength })) {
-        result.push(child);
+      if (
+        shouldTranslateElement(child, settings, {
+          minTextLength: minCommentTextLength,
+          includeLayoutFragile: true
+        })
+      ) {
+        if (isLayoutFragileContainer(child)) {
+          visit(child, depth - 1);
+        } else {
+          result.push(child);
+        }
       }
     }
+  };
+  for (const element of elements) {
+    visit(element, 3);
   }
   return dedupeNestedBlocks(result);
 }
@@ -826,7 +866,14 @@ function completeBlockTranslation(
 function restorePage(): void {
   runId += 1;
   stopLiveTranslationListeners();
-  // 掐断在途流式连接:后台 onDisconnect 会 abort 对应 fetch,
+  needsViewportRescan = false;
+  // 主动结算在途流式请求:Chrome 只在对端触发 onDisconnect,自己 disconnect()
+  // 不会唤醒本侧监听,Promise 会悬着、collectingBlocks 永远不释放。
+  for (const cancel of [...activeStreamCancellers]) {
+    cancel();
+  }
+  activeStreamCancellers.clear();
+  // 断开 Port 本身:后台 onDisconnect 会 abort 对应 fetch,
   // 不让旧请求继续占用本地模型、排队在下一轮翻译前面。
   for (const port of activeStreamPorts) {
     try {
@@ -951,6 +998,8 @@ async function translateTexts(texts: string[]): Promise<string[]> {
  * onDelta 收到的是该段"到目前为止"的完整文本;建流/中途失败由调用方回落。
  */
 const activeStreamPorts = new Set<chrome.runtime.Port>();
+/** 主动取消在途流式请求的结算回调(restorePage 调用)。 */
+const activeStreamCancellers = new Set<() => void>();
 const streamPingIntervalMs = 20_000;
 const streamFirstDeltaTimeoutMs = 60_000;
 
@@ -984,6 +1033,7 @@ function streamTranslateTexts(
       window.clearInterval(pingTimer);
       window.clearTimeout(watchdogTimer);
       activeStreamPorts.delete(port);
+      activeStreamCancellers.delete(cancel);
       port.onMessage.removeListener(listener);
       try {
         port.disconnect();
@@ -996,6 +1046,19 @@ function streamTranslateTexts(
         resolve(results);
       }
     };
+
+    /** 用户关闭翻译时由 restorePage 调用:结算 Promise、清理计时器。 */
+    const cancel = () => {
+      if (finished) {
+        return;
+      }
+      if (!firstError) {
+        firstError = new Error("页面翻译已关闭,流式请求已取消。");
+      }
+      settled.fill(true);
+      finish();
+    };
+    activeStreamCancellers.add(cancel);
 
     const maybeFinish = () => {
       if (settled.every(Boolean)) {
@@ -1270,9 +1333,6 @@ function shouldTranslateText(text: string, element?: Element, minLengthOverride?
     return false;
   }
   if (/^[0-9.,+\s\-*:|/()%[\]{}]+$/.test(text)) {
-    return false;
-  }
-  if (looksLikeStatLabel(text)) {
     return false;
   }
   if (/^@[\w.-]+$/.test(text)) {    return false;
