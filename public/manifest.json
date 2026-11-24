@@ -3,7 +3,7 @@
   "name": "Local LLM Translator",
   "short_name": "Local LLM Translator",
   "description": "Translate pages and selections through a local or self-hosted LLM endpoint.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "action": {
     "default_icon": {
       "16": "icon/16.png",
