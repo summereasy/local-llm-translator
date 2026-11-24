@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { extractDeltaContent, SseAccumulator, StreamDeltaAssembler } from "./sse";
+import {
+  extractDeltaContent,
+  readSseBody,
+  SseAccumulator,
+  SseBodyReader,
+  StreamDeltaAssembler,
+} from "./sse";
 
 describe("SseAccumulator", () => {
   test("returns complete events from a single chunk", () => {
@@ -108,6 +114,122 @@ describe("StreamDeltaAssembler", () => {
     expect(finished.ok).toBe(false);
     if (!finished.ok) {
       expect(finished.reason).toContain("model overloaded");
+    }
+  });
+
+  test("error event is terminal: consume returns true and done is set", () => {
+    const a = new StreamDeltaAssembler();
+    expect(a.consume(chunk("已到手的半截"))).toBe(false);
+    expect(a.consume(JSON.stringify({ error: { message: "inference failed" } }))).toBe(true);
+    expect(a.done).toBe(true);
+    // 终止后到达的事件不再影响结果。
+    expect(a.consume(chunk("迟到的数据"))).toBe(true);
+    const finished = a.finish();
+    expect(finished.ok).toBe(false);
+    if (!finished.ok) {
+      expect(finished.reason).toContain("inference failed");
+    }
+  });
+
+  test("whitespace-only output with [DONE] counts as empty and enables fallback", () => {
+    const a = new StreamDeltaAssembler();
+    expect(a.consume(chunk("  "))).toBe(false);
+    expect(a.consume("[DONE]")).toBe(true);
+    const finished = a.finish();
+    expect(finished.ok).toBe(false);
+    if (!finished.ok) {
+      expect(finished.reason).toContain("为空");
+    }
+  });
+});
+
+describe("readSseBody", () => {
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const chunk = (text: string) =>
+    JSON.stringify({ choices: [{ delta: { content: text } }] });
+
+  /** 按顺序吐出 chunks;耗尽后要么 EOF,要么 read() 永不返回(响应体保持打开)。 */
+  function fakeReader(chunks: Uint8Array[], keepOpenAfter = false): {
+    reader: SseBodyReader;
+    cancelled: () => boolean;
+  } {
+    let cursor = 0;
+    let cancelled = false;
+    const pending = new Promise<{ done: false; value: Uint8Array }>(() => {});
+    const reader: SseBodyReader = {
+      read: () => {
+        const value = chunks[cursor];
+        if (value === undefined) {
+          return keepOpenAfter
+            ? pending
+            : Promise.resolve({ done: true as const, value: undefined });
+        }
+        cursor += 1;
+        return Promise.resolve({ done: false as const, value });
+      },
+      cancel: async () => {
+        cancelled = true;
+      },
+    };
+    return { reader, cancelled: () => cancelled };
+  }
+
+  test("error event settles immediately while the body stays open", async () => {
+    // 评审复现场景:一个有效 delta → 后端 error 事件 → 响应体保持打开
+    // (不再发数据也不断开)。错误实现会一直等 read(),本用例超时失败。
+    const { reader, cancelled } = fakeReader(
+      [
+        enc(`data: ${chunk("半截")}\n\n`),
+        enc(`data: ${JSON.stringify({ error: { message: "inference failed" } })}\n\n`),
+      ],
+      true
+    );
+    const deltas: string[] = [];
+    const finished = await readSseBody(
+      reader,
+      new StreamDeltaAssembler(),
+      (d) => deltas.push(d)
+    );
+    expect(finished.ok).toBe(false);
+    if (!finished.ok) {
+      expect(finished.reason).toContain("inference failed");
+    }
+    expect(deltas).toEqual(["半截"]);
+    expect(cancelled()).toBe(true);
+  });
+
+  test("[DONE] terminates and cancels the rest of the body", async () => {
+    // [DONE] 之后响应体可能还挂着,读循环必须退出并 cancel。
+    const { reader, cancelled } = fakeReader(
+      [enc(`data: ${chunk("你好")}\n\n`), enc("data: [DONE]\n\n")],
+      true
+    );
+    const finished = await readSseBody(reader, new StreamDeltaAssembler());
+    expect(finished).toEqual({ ok: true, text: "你好" });
+    expect(cancelled()).toBe(true);
+  });
+
+  test("delta then EOF without [DONE]: premature cut is an error", async () => {
+    const { reader } = fakeReader([enc(`data: ${chunk("半截译文")}\n\n`)]);
+    const finished = await readSseBody(reader, new StreamDeltaAssembler());
+    expect(finished.ok).toBe(false);
+    if (!finished.ok) {
+      expect(finished.reason).toContain("提前切断");
+    }
+  });
+
+  test("trailing [DONE] without blank line is flushed at EOF", async () => {
+    const { reader } = fakeReader([enc(`data: ${chunk("完整")}\n\ndata: [DONE]\n`)]);
+    const finished = await readSseBody(reader, new StreamDeltaAssembler());
+    expect(finished).toEqual({ ok: true, text: "完整" });
+  });
+
+  test("whitespace-only stream falls back instead of returning empty success", async () => {
+    const { reader } = fakeReader([enc(`data: ${chunk("  ")}\n\n`), enc("data: [DONE]\n\n")]);
+    const finished = await readSseBody(reader, new StreamDeltaAssembler());
+    expect(finished.ok).toBe(false);
+    if (!finished.ok) {
+      expect(finished.reason).toContain("为空");
     }
   });
 });

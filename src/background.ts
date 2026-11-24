@@ -7,7 +7,7 @@ import {
   resolveTemperature
 } from "./shared/modelPresets";
 import { formatCommandShortcut } from "./shared/shortcuts";
-import { SseAccumulator, StreamDeltaAssembler } from "./shared/sse";
+import { readSseBody, StreamDeltaAssembler } from "./shared/sse";
 import {
   streamPortName,
   type GetCommandShortcutResponse,
@@ -182,44 +182,11 @@ async function streamTranslateOne(
     throw new Error("后端没有返回 SSE 流(text/event-stream),已回落整段请求。");
   }
 
-  const accumulator = new SseAccumulator();
   const assembler = new StreamDeltaAssembler();
-  const decoder = new TextDecoder();
   const reader = response.body.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      for (const data of accumulator.push(decoder.decode(value, { stream: true }))) {
-        if (assembler.consume(data, onDelta)) {
-          // 已收到 [DONE]:正常结束信号到了,不再等响应体 EOF。
-          return finishStream(assembler);
-        }
-      }
-      if (assembler.done) {
-        return finishStream(assembler);
-      }
-    }
-    for (const data of [...accumulator.push(decoder.decode()), ...accumulator.flush()]) {
-      if (assembler.consume(data, onDelta)) {
-        break;
-      }
-    }
-  } finally {
-    // 结束信号已到或对端不再发数据,主动放弃剩余响应体。
-    await reader.cancel().catch(() => {});
-  }
-  const finished = assembler.finish();
-  if (!finished.ok) {
-    throw new Error(finished.reason);
-  }
-  return finished.text;
-}
-
-function finishStream(assembler: StreamDeltaAssembler): string {
-  const finished = assembler.finish();
+  // 读流循环在 shared/sse.ts:[DONE] 或后端错误事件一到就终止并 cancel 剩余
+  // 响应体,不等 EOF(报错后连接可能一直开着,等下去会拖住整批翻译)。
+  const finished = await readSseBody(reader, assembler, onDelta);
   if (!finished.ok) {
     throw new Error(finished.reason);
   }

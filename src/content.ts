@@ -416,7 +416,11 @@ async function translateBlockBatch(
           if (!shell || !pageActive || currentRunId !== runId) {
             return;
           }
-          streamedAnyRender = true;
+          if (partial.trim()) {
+            // 纯空白的 partial 不算"已上屏":否则纯空白译文报错时会被
+            // 已上屏判定挡住,跳过整段回落。
+            streamedAnyRender = true;
+          }
           const uncachedItem = uncached[index];
           renderStreamingText(
             shell,
