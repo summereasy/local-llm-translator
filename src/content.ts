@@ -471,9 +471,10 @@ function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
     )
   );
   const candidates = dedupeNestedBlocks([...siteSpecific, ...preferred]);
+  const expanded = expandLayoutFragile(candidates, settings);
 
-  if (candidates.length > 0) {
-    return prioritizeByViewport(candidates).slice(0, settings.maxConcurrentRequests * 3);
+  if (expanded.length > 0) {
+    return prioritizeByViewport(expanded).slice(0, settings.maxConcurrentRequests * 3);
   }
 
   const fallback = dedupeNestedBlocks(
@@ -481,7 +482,10 @@ function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
       .filter((element) => isLeafLikeBlock(element))
       .filter((element) => shouldTranslateElement(element, settings))
   );
-  return prioritizeByViewport(fallback).slice(0, settings.maxConcurrentRequests * 3);
+  return prioritizeByViewport(expandLayoutFragile(fallback, settings)).slice(
+    0,
+    settings.maxConcurrentRequests * 3
+  );
 }
 
 /**
@@ -543,6 +547,9 @@ function shouldTranslateElement(
   if (isCompositeMetadataBlock(element)) {
     return false;
   }
+  if (isLayoutFragileContainer(element)) {
+    return false;
+  }
   if (isYoutubeWatchChrome(element)) {
     return false;
   }
@@ -596,6 +603,39 @@ function isCompositeMetadataBlock(element: Element): boolean {
     return true;
   }
   return element.matches("#info, #top-row, ytd-video-owner-renderer, #owner, #actions, #actions-inner");
+}
+
+/**
+ * flex/grid 且带元素子节点的块。设计站点常见:标题行 = 标题 + 副标题 + 更新时间
+ * 横排在一个 h2/li/td 里。整体套壳会把横排子元素全塞进一个容器,布局崩掉
+ * (2026-11-24 slopalytics 实测);这类块不改自身,下沉到文本子节点分别翻译。
+ */
+function isLayoutFragileContainer(element: Element): boolean {
+  const display = window.getComputedStyle(element).display;
+  if (display !== "flex" && display !== "grid" && display !== "inline-flex" && display !== "inline-grid") {
+    return false;
+  }
+  return element.children.length > 0;
+}
+
+/** flex/grid 容器下沉一层:把容器自身换成分别可翻译的文本子节点。 */
+function expandLayoutFragile(
+  elements: Element[],
+  settings: LocalTranslatorSettings
+): Element[] {
+  const result: Element[] = [];
+  for (const element of elements) {
+    if (!isLayoutFragileContainer(element)) {
+      result.push(element);
+      continue;
+    }
+    for (const child of Array.from(element.children)) {
+      if (shouldTranslateElement(child, settings, { minTextLength: minCommentTextLength })) {
+        result.push(child);
+      }
+    }
+  }
+  return dedupeNestedBlocks(result);
 }
 
 function isYoutubeWatchChrome(element: Element): boolean {
