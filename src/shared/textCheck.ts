@@ -63,3 +63,20 @@ export function looksUntranslated(
 
   return cjkTargetLanguages.has(targetLanguage) && !cjkPattern.test(translated);
 }
+
+/**
+ * "标签 + 数值"统计行:短、无句读、以数字(可带 %/K/M/B 单位)结尾。
+ * 看板/电商常见("Input from cache98.1%"、"Output/turn 10.1K"),整块送翻
+ * 只会把名字和数字糊成一坨,直接跳过。
+ */
+export function looksLikeStatLabel(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || trimmed.length > 48) {
+    return false;
+  }
+  // 句末句号或任意叹问号说明是句子;小数点里的 "." 不算句读。
+  if (/[!?。！？]/.test(trimmed) || /[.]$/.test(trimmed)) {
+    return false;
+  }
+  return /[-+]?\d+([.,]\d+)?\s*[%kKmMbB]?$/.test(trimmed);
+}

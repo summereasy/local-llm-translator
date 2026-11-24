@@ -1,6 +1,6 @@
 import { loadSettings, type LocalTranslatorSettings } from "./shared/settings";
 import { promptScopeKey } from "./shared/modelPresets";
-import { looksUntranslated } from "./shared/textCheck";
+import { looksLikeStatLabel, looksUntranslated } from "./shared/textCheck";
 import type {
   GetCommandShortcutResponse,
   LocalTranslatorRequest,
@@ -531,7 +531,7 @@ function shouldTranslateElement(
   settings: LocalTranslatorSettings,
   options?: TranslateElementOptions
 ): boolean {
-  if (processedElements.has(element) || failedElements.has(element) || element.closest(ignoredSelector)) {
+  if (processedElements.has(element) || failedElements.has(element) || isIgnoredElement(element)) {
     return false;
   }
   // X 只翻译推文正文。profile / 按钮 / fallback 大容器一律跳过，避免毁掉布局。
@@ -1269,11 +1269,13 @@ function shouldTranslateText(text: string, element?: Element, minLengthOverride?
   if (text.length < minLength || text.length > maxTextLength) {
     return false;
   }
-  if (/^[0-9.,+\s\-*:|/()[\]{}]+$/.test(text)) {
+  if (/^[0-9.,+\s\-*:|/()%[\]{}]+$/.test(text)) {
     return false;
   }
-  if (/^@[\w.-]+$/.test(text)) {
+  if (looksLikeStatLabel(text)) {
     return false;
+  }
+  if (/^@[\w.-]+$/.test(text)) {    return false;
   }
   if (/^[\w.-]+@[\w.-]+\.[A-Za-z]{2,}$/.test(text)) {
     return false;
@@ -1480,6 +1482,24 @@ function isShortLabelElement(element?: Element): boolean {
     return false;
   }
   return element.matches("th, td, dt, dd, h1, h2, h3, h4, h5, h6");
+}
+
+/**
+ * aside 里的 details/section/article 是折叠起来的正文(数据看板常见的
+ * "Data & methodology"),不算侧栏 chrome,应当翻译。
+ */
+function isIgnoredElement(element: Element): boolean {
+  const hit = element.closest(ignoredSelector);
+  if (!hit) {
+    return false;
+  }
+  if (hit instanceof HTMLElement && hit.tagName === "ASIDE") {
+    const contentRoot = element.closest("details, section, article");
+    if (contentRoot && hit.contains(contentRoot)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function looksLikeModelName(text: string): boolean {
