@@ -175,6 +175,13 @@
             </label>
             <label class="stack-label">
               <span>
+                <strong>极速模式</strong>
+                <small>体感提速： 译文随模型生成逐字上屏，首屏段落优先翻译。仅 OpenAI-compatible 后端走流式；Ollama 或服务不支持流式时自动回落整段返回</small>
+              </span>
+              <input id="turboMode" type="checkbox" checked />
+            </label>
+            <label class="stack-label">
+              <span>
                 <strong>Prompt</strong>
                 <small id="promptTemplateHint">可使用 {{targetLanguage}} 和 {{text}}</small>
               </span>

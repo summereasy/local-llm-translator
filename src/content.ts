@@ -5,9 +5,11 @@ import type {
   GetCommandShortcutResponse,
   LocalTranslatorRequest,
   PageTranslationState,
+  StreamPortMessage,
   TranslateTextResponse,
   TranslateTextsResponse
 } from "./shared/messages";
+import { streamPortName } from "./shared/messages";
 
 const ignoredSelector = [
   "header",
@@ -85,6 +87,8 @@ type TranslatedBlock = {
   originalClassName: string;
   wrapper: HTMLElement;
   result: HTMLElement;
+  /** 极速模式: 上次流式上屏时间,用于节流。 */
+  streamRenderAt?: number;
 };
 
 type SelectionAnchor = {
@@ -221,17 +225,33 @@ async function togglePageTranslation(): Promise<void> {
   pageActive = true;
   runId += 1;
   setupLiveTranslationListeners();
+  // 首次触发不吃防抖,按下快捷键立刻开翻。
+  scheduleVisibleTranslation(true);
+}
+
+function onViewportChange(): void {
   scheduleVisibleTranslation();
 }
 
 function setupLiveTranslationListeners(): void {
-  window.addEventListener("scroll", scheduleVisibleTranslation, { passive: true });
-  window.addEventListener("resize", scheduleVisibleTranslation, { passive: true });
+  window.addEventListener("scroll", onViewportChange, { passive: true });
+  window.addEventListener("resize", onViewportChange, { passive: true });
 
   mutationObserver?.disconnect();
-  mutationObserver = new MutationObserver(() => {
-    if (pageActive) {
-      scheduleVisibleTranslation();
+  mutationObserver = new MutationObserver((mutations) => {
+    if (!pageActive) {
+      return;
+    }
+    // 自己写译文触发的 mutation 不算页面变化,否则流式渲染期间会
+    // 每 120ms 全页重扫一遍。
+    for (const mutation of mutations) {
+      const target = mutation.target as Element | null;
+      const fromSelf =
+        target && typeof target.closest === "function" && target.closest(".local-translator-wrapper");
+      if (!fromSelf) {
+        scheduleVisibleTranslation();
+        return;
+      }
     }
   });
   if (document.body) {
@@ -240,8 +260,8 @@ function setupLiveTranslationListeners(): void {
 }
 
 function stopLiveTranslationListeners(): void {
-  window.removeEventListener("scroll", scheduleVisibleTranslation);
-  window.removeEventListener("resize", scheduleVisibleTranslation);
+  window.removeEventListener("scroll", onViewportChange);
+  window.removeEventListener("resize", onViewportChange);
   mutationObserver?.disconnect();
   mutationObserver = null;
   if (scheduled) {
@@ -250,7 +270,15 @@ function stopLiveTranslationListeners(): void {
   }
 }
 
-function scheduleVisibleTranslation(): void {
+function scheduleVisibleTranslation(immediate = false): void {
+  if (immediate) {
+    if (scheduled) {
+      window.clearTimeout(scheduled);
+      scheduled = 0;
+    }
+    void translateVisibleBlocks();
+    return;
+  }
   if (scheduled || !pageActive) {
     return;
   }
@@ -260,7 +288,33 @@ function scheduleVisibleTranslation(): void {
   }, 120);
 }
 
+let collectingBlocks = false;
+let needsViewportRescan = false;
+
 async function translateVisibleBlocks(): Promise<void> {
+  if (!pageActive || !document.body) {
+    return;
+  }
+  if (collectingBlocks) {
+    // 批次进行中来了新视口(滚动/展开):记下,批次结束后按最新视口补扫一次,
+    // 否则要等用户再滚一下才会翻新内容。
+    needsViewportRescan = true;
+    return;
+  }
+
+  collectingBlocks = true;
+  try {
+    await collectAndTranslate();
+  } finally {
+    collectingBlocks = false;
+    if (needsViewportRescan && pageActive) {
+      needsViewportRescan = false;
+      scheduleVisibleTranslation();
+    }
+  }
+}
+
+async function collectAndTranslate(): Promise<void> {
   if (!pageActive || !document.body) {
     return;
   }
@@ -270,6 +324,11 @@ async function translateVisibleBlocks(): Promise<void> {
   const blocks = collectVisibleBlocks(settings).filter((element) => !activeElements.has(element));
   if (blocks.length === 0) {
     broadcastProgress();
+    return;
+  }
+  if (!pageActive || currentRunId !== runId) {
+    // 收集期间 run 变了(关→开切换): 让新一轮滚动调度接手,别把新 run 悬死。
+    scheduleVisibleTranslation();
     return;
   }
 
@@ -343,12 +402,60 @@ async function translateBlockBatch(
     }
   }
   try {
-    const translatedTexts = await translateTexts(requestTexts);
+    let translatedTexts: string[] | null = null;
+    let streamedAnyRender = false;
+    let abortedByCancel = false;
+    if (settings.turboMode && settings.backendKind === "openai-compatible") {
+      try {
+        translatedTexts = await streamTranslateTexts(requestTexts, (index, partial) => {
+          const element = requestElements[index];
+          if (!element) {
+            return;
+          }
+          const shell = shells.get(element);
+          if (!shell || !pageActive || currentRunId !== runId) {
+            return;
+          }
+          if (partial.trim()) {
+            // 纯空白的 partial 不算"已上屏":否则纯空白译文报错时会被
+            // 已上屏判定挡住,跳过整段回落。
+            streamedAnyRender = true;
+          }
+          const uncachedItem = uncached[index];
+          renderStreamingText(
+            shell,
+            restoreTranslationTokens(partial, uncachedItem?.tokens ?? [])
+          );
+        });
+      } catch (streamError) {
+        if (!pageActive || currentRunId !== runId) {
+          // 用户已关闭或切换:请求被主动取消。不回落整段(那会背着用户继续
+          // 发请求)、不标记失败,壳已由 restorePage 还原,直接收尾。
+          abortedByCancel = true;
+        } else if (streamedAnyRender) {
+          // 译文已经上屏到一半,断流按整批失败处理,与既有错误路径一致。
+          throw streamError;
+        } else {
+          console.debug("[local-llm-translator] streaming unavailable, falling back", streamError);
+        }
+      }
+    }
+    if (abortedByCancel) {
+      return;
+    }
+    if (!translatedTexts) {
+      translatedTexts = await translateTexts(requestTexts);
+    }
     requestElements.forEach((element, index) => {
       const translated = translatedTexts[index];
       const shell = shells.get(element);
       const uncachedItem = uncached[index];
-      if (!translated || !pageActive || currentRunId !== runId || !element.isConnected) {
+      if (!pageActive || currentRunId !== runId) {
+        // 旧 run 的批次:只清掉自己的壳,不碰新一轮的 failed/active/pending。
+        shell && restoreBlock(shell);
+        return;
+      }
+      if (!translated || !element.isConnected) {
         shell && restoreBlock(shell);
         failedElements.add(element);
         return;
@@ -360,13 +467,18 @@ async function translateBlockBatch(
       processedElements.add(element);
     });
   } catch (error) {
+    const stale = !pageActive || currentRunId !== runId;
     shells.forEach((shell) => restoreBlock(shell));
-    elements.forEach((element) => failedElements.add(element));
+    if (!stale) {
+      elements.forEach((element) => failedElements.add(element));
+    }
     warnPageTranslationError(settings, error);
     console.debug("[local-llm-translator] translation failed", error);
   } finally {
-    elements.forEach((element) => activeElements.delete(element));
-    pending = Math.max(0, pending - elements.length);
+    if (pageActive && currentRunId === runId) {
+      elements.forEach((element) => activeElements.delete(element));
+      pending = Math.max(0, pending - elements.length);
+    }
     broadcastProgress();
   }
 }
@@ -374,7 +486,7 @@ async function translateBlockBatch(
 function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
   const preferred = dedupeNestedBlocks(
     queryContentRoots(preferredBlockSelector).filter((element) =>
-      shouldTranslateElement(element, settings)
+      shouldTranslateElement(element, settings, { includeLayoutFragile: true })
     )
   );
   const siteSpecific = dedupeNestedBlocks(
@@ -383,9 +495,10 @@ function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
     )
   );
   const candidates = dedupeNestedBlocks([...siteSpecific, ...preferred]);
+  const expanded = expandLayoutFragile(candidates, settings);
 
-  if (candidates.length > 0) {
-    return candidates.slice(0, settings.maxConcurrentRequests * 3);
+  if (expanded.length > 0) {
+    return prioritizeByViewport(expanded).slice(0, settings.maxConcurrentRequests * 3);
   }
 
   const fallback = dedupeNestedBlocks(
@@ -393,7 +506,22 @@ function collectVisibleBlocks(settings: LocalTranslatorSettings): Element[] {
       .filter((element) => isLeafLikeBlock(element))
       .filter((element) => shouldTranslateElement(element, settings))
   );
-  return fallback.slice(0, settings.maxConcurrentRequests * 3);
+  return prioritizeByViewport(expandLayoutFragile(fallback, settings)).slice(
+    0,
+    settings.maxConcurrentRequests * 3
+  );
+}
+
+/**
+ * DOM 顺序不等于视觉顺序。按视口位置排序后再截断,保证首批请求优先
+ * 覆盖首屏段落,而不是被页脚之类的后置内容占满并发额度。
+ */
+function prioritizeByViewport(elements: Element[]): Element[] {
+  const tops = new Map<Element, number>();
+  for (const element of elements) {
+    tops.set(element, element.getBoundingClientRect().top);
+  }
+  return [...elements].sort((a, b) => (tops.get(a) ?? 0) - (tops.get(b) ?? 0));
 }
 
 function queryContentRoots(selector: string): Element[] {
@@ -420,6 +548,8 @@ function dedupeNestedBlocks(elements: Element[]): Element[] {
 
 type TranslateElementOptions = {
   minTextLength?: number;
+  /** 收集阶段放行 flex/grid 容器,交给 expandLayoutFragile 下沉到子节点。 */
+  includeLayoutFragile?: boolean;
 };
 
 function shouldTranslateElement(
@@ -427,7 +557,7 @@ function shouldTranslateElement(
   settings: LocalTranslatorSettings,
   options?: TranslateElementOptions
 ): boolean {
-  if (processedElements.has(element) || failedElements.has(element) || element.closest(ignoredSelector)) {
+  if (processedElements.has(element) || failedElements.has(element) || isIgnoredElement(element)) {
     return false;
   }
   // X 只翻译推文正文。profile / 按钮 / fallback 大容器一律跳过，避免毁掉布局。
@@ -441,6 +571,11 @@ function shouldTranslateElement(
     return false;
   }
   if (isCompositeMetadataBlock(element)) {
+    return false;
+  }
+  if (!options?.includeLayoutFragile && isLayoutFragileContainer(element)) {
+    // 默认拒绝;收集阶段用 includeLayoutFragile 放行进来,
+    // 由 expandLayoutFragile 换成可翻译的文本子节点。
     return false;
   }
   if (isYoutubeWatchChrome(element)) {
@@ -496,6 +631,55 @@ function isCompositeMetadataBlock(element: Element): boolean {
     return true;
   }
   return element.matches("#info, #top-row, ytd-video-owner-renderer, #owner, #actions, #actions-inner");
+}
+
+/**
+ * flex/grid 且带元素子节点的块。设计站点常见:标题行 = 标题 + 副标题 + 更新时间
+ * 横排在一个 h2/li/td 里。整体套壳会把横排子元素全塞进一个容器,布局崩掉
+ * (2026-11-24 slopalytics 实测);这类块不改自身,下沉到文本子节点分别翻译。
+ */
+function isLayoutFragileContainer(element: Element): boolean {
+  const display = window.getComputedStyle(element).display;
+  if (display !== "flex" && display !== "grid" && display !== "inline-flex" && display !== "inline-grid") {
+    return false;
+  }
+  return element.children.length > 0;
+}
+
+/** flex/grid 容器下沉:把容器自身换成分别可翻译的文本子节点(flex 套 flex 递归,最多 3 层)。 */
+function expandLayoutFragile(
+  elements: Element[],
+  settings: LocalTranslatorSettings
+): Element[] {
+  const result: Element[] = [];
+  const visit = (element: Element, depth: number): void => {
+    if (!isLayoutFragileContainer(element)) {
+      result.push(element);
+      return;
+    }
+    if (depth <= 0) {
+      // flex 嵌套太深:放弃这块,宁可少翻一段不毁布局。
+      return;
+    }
+    for (const child of Array.from(element.children)) {
+      if (
+        shouldTranslateElement(child, settings, {
+          minTextLength: minCommentTextLength,
+          includeLayoutFragile: true
+        })
+      ) {
+        if (isLayoutFragileContainer(child)) {
+          visit(child, depth - 1);
+        } else {
+          result.push(child);
+        }
+      }
+    }
+  };
+  for (const element of elements) {
+    visit(element, 3);
+  }
+  return dedupeNestedBlocks(result);
 }
 
 function isYoutubeWatchChrome(element: Element): boolean {
@@ -643,6 +827,7 @@ function completeBlockTranslation(
   translated: string,
   settings: LocalTranslatorSettings
 ): void {
+  block.wrapper.classList.remove("local-translator-streaming");
   block.wrapper.classList.add("local-translator-completed");
   const preserveBreaks = isXTweetTextElement(block.element) || translated.includes("\n");
   block.result.className =
@@ -685,6 +870,23 @@ function completeBlockTranslation(
 function restorePage(): void {
   runId += 1;
   stopLiveTranslationListeners();
+  needsViewportRescan = false;
+  // 主动结算在途流式请求:Chrome 只在对端触发 onDisconnect,自己 disconnect()
+  // 不会唤醒本侧监听,Promise 会悬着、collectingBlocks 永远不释放。
+  for (const cancel of [...activeStreamCancellers]) {
+    cancel();
+  }
+  activeStreamCancellers.clear();
+  // 断开 Port 本身:后台 onDisconnect 会 abort 对应 fetch,
+  // 不让旧请求继续占用本地模型、排队在下一轮翻译前面。
+  for (const port of activeStreamPorts) {
+    try {
+      port.disconnect();
+    } catch {
+      // 已断。
+    }
+  }
+  activeStreamPorts.clear();
 
   for (const item of [...translatedBlocks]) {
     restoreBlock(item);
@@ -793,6 +995,161 @@ async function translateTexts(texts: string[]): Promise<string[]> {
     throw new Error(response.error);
   }
   return response.texts;
+}
+
+/**
+ * 极速模式: 每批翻译建一个长连 Port,后台 stream:true 拉取并逐 token 推回。
+ * onDelta 收到的是该段"到目前为止"的完整文本;建流/中途失败由调用方回落。
+ */
+const activeStreamPorts = new Set<chrome.runtime.Port>();
+/** 主动取消在途流式请求的结算回调(restorePage 调用)。 */
+const activeStreamCancellers = new Set<() => void>();
+const streamPingIntervalMs = 20_000;
+const streamFirstDeltaTimeoutMs = 60_000;
+
+function streamTranslateTexts(
+  texts: string[],
+  onDelta: (index: number, partialText: string) => void
+): Promise<string[]> {
+  if (texts.length === 0) {
+    return Promise.resolve([]);
+  }
+  return new Promise((resolve, reject) => {
+    let port: chrome.runtime.Port;
+    try {
+      port = chrome.runtime.connect({ name: streamPortName });
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error("无法建立流式连接"));
+      return;
+    }
+
+    const results = new Array<string>(texts.length).fill("");
+    const settled = new Array<boolean>(texts.length).fill(false);
+    let firstError: Error | null = null;
+    let finished = false;
+    let gotAnyDelta = false;
+
+    const finish = () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      window.clearInterval(pingTimer);
+      window.clearTimeout(watchdogTimer);
+      activeStreamPorts.delete(port);
+      activeStreamCancellers.delete(cancel);
+      port.onMessage.removeListener(listener);
+      try {
+        port.disconnect();
+      } catch {
+        // 对端已关。
+      }
+      if (firstError) {
+        reject(firstError);
+      } else {
+        resolve(results);
+      }
+    };
+
+    /** 用户关闭翻译时由 restorePage 调用:结算 Promise、清理计时器。 */
+    const cancel = () => {
+      if (finished) {
+        return;
+      }
+      if (!firstError) {
+        firstError = new Error("页面翻译已关闭,流式请求已取消。");
+      }
+      settled.fill(true);
+      finish();
+    };
+    activeStreamCancellers.add(cancel);
+
+    const maybeFinish = () => {
+      if (settled.every(Boolean)) {
+        finish();
+      }
+    };
+
+    // MV3: 只有端口上来消息才给 service worker 续命;首 token 前定时 ping。
+    const pingTimer = window.setInterval(() => {
+      try {
+        port.postMessage({ type: "stream-ping" });
+      } catch {
+        // 端口已坏,onDisconnect 会收尾。
+      }
+    }, streamPingIntervalMs);
+
+    // 首 delta 看门狗:超时视为流式不可用,让调用方回落整段请求,
+    // 不等 service worker 被 30s idle 杀掉才反应。
+    const watchdogTimer = window.setTimeout(() => {
+      if (finished || gotAnyDelta) {
+        return;
+      }
+      firstError = new Error("流式首响应超时,已回落整段请求。");
+      settled.fill(true);
+      finish();
+    }, streamFirstDeltaTimeoutMs);
+
+    const listener = (message: StreamPortMessage) => {
+      if (message.type === "stream-delta") {
+        if (!settled[message.index]) {
+          gotAnyDelta = true;
+          results[message.index] += message.delta;
+          onDelta(message.index, results[message.index] ?? "");
+        }
+        return;
+      }
+      if (message.type === "stream-done") {
+        results[message.index] = message.text;
+        settled[message.index] = true;
+        onDelta(message.index, message.text);
+        maybeFinish();
+        return;
+      }
+      if (message.type === "stream-error") {
+        settled[message.index] = true;
+        if (!firstError) {
+          firstError = new Error(message.error);
+        }
+        maybeFinish();
+      }
+    };
+
+    activeStreamPorts.add(port);
+    port.onMessage.addListener(listener);
+    port.onDisconnect.addListener(() => {
+      if (finished) {
+        return;
+      }
+      if (!firstError) {
+        firstError = new Error("流式连接中断");
+      }
+      settled.fill(true);
+      finish();
+    });
+
+    try {
+      port.postMessage({ type: "stream-translate", texts });
+    } catch (error) {
+      firstError = error instanceof Error ? error : new Error("流式请求发送失败");
+      settled.fill(true);
+      finish();
+    }
+  });
+}
+
+/** 流式期间把部分译文写进壳层;按块节流,避免每个 token 都动 DOM。 */
+function renderStreamingText(block: TranslatedBlock, partial: string): void {
+  const now = performance.now();
+  if (block.streamRenderAt !== undefined && now - block.streamRenderAt < 50) {
+    return;
+  }
+  block.streamRenderAt = now;
+  block.wrapper.classList.add("local-translator-streaming");
+  block.result.className = "local-translator-result local-translator-streaming";
+  // 掐掉尾巴上只到了一半的 @mention 保护符,避免豆腐块闪一下。
+  const visible = partial.replace(/\uE000[A-Za-z0-9]*$/, "");
+  block.result.textContent = visible;
 }
 
 async function showSelectionButton(text: string, anchor: SelectionAnchor): Promise<void> {
@@ -979,11 +1336,10 @@ function shouldTranslateText(text: string, element?: Element, minLengthOverride?
   if (text.length < minLength || text.length > maxTextLength) {
     return false;
   }
-  if (/^[0-9.,+\s\-*:|/()[\]{}]+$/.test(text)) {
+  if (/^[0-9.,+\s\-*:|/()%[\]{}]+$/.test(text)) {
     return false;
   }
-  if (/^@[\w.-]+$/.test(text)) {
-    return false;
+  if (/^@[\w.-]+$/.test(text)) {    return false;
   }
   if (/^[\w.-]+@[\w.-]+\.[A-Za-z]{2,}$/.test(text)) {
     return false;
@@ -1190,6 +1546,24 @@ function isShortLabelElement(element?: Element): boolean {
     return false;
   }
   return element.matches("th, td, dt, dd, h1, h2, h3, h4, h5, h6");
+}
+
+/**
+ * aside 里的 details/section/article 是折叠起来的正文(数据看板常见的
+ * "Data & methodology"),不算侧栏 chrome,应当翻译。
+ */
+function isIgnoredElement(element: Element): boolean {
+  const hit = element.closest(ignoredSelector);
+  if (!hit) {
+    return false;
+  }
+  if (hit instanceof HTMLElement && hit.tagName === "ASIDE") {
+    const contentRoot = element.closest("details, section, article");
+    if (contentRoot && hit.contains(contentRoot)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function looksLikeModelName(text: string): boolean {

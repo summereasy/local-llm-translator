@@ -27,6 +27,7 @@ const translationMode = mustGet<HTMLSelectElement>("translationMode");
 const styleFieldset = mustGet<HTMLFieldSetElement>("styleFieldset");
 const enableSelectionButton = mustGet<HTMLInputElement>("enableSelectionButton");
 const disableBackendCache = mustGet<HTMLInputElement>("disableBackendCache");
+const turboMode = mustGet<HTMLInputElement>("turboMode");
 const maxConcurrentRequests = mustGet<HTMLSelectElement>("maxConcurrentRequests");
 const openShortcutsPage = mustGet<HTMLButtonElement>("openShortcutsPage");
 const status = mustGet<HTMLElement>("status");
@@ -47,6 +48,7 @@ void loadSettings().then((settings) => {
   setSelectedStyle(settings.translationTextStyle);
   enableSelectionButton.checked = settings.enableSelectionButton;
   disableBackendCache.checked = settings.disableBackendCache;
+  turboMode.checked = settings.turboMode;
   maxConcurrentRequests.value = String(settings.maxConcurrentRequests || 8);
   updateStyleAvailability();
   updatePromptAvailability();
@@ -111,6 +113,7 @@ async function persistSettings(): Promise<void> {
     translationTextStyle: getSelectedStyle(),
     enableSelectionButton: enableSelectionButton.checked,
     disableBackendCache: disableBackendCache.checked,
+    turboMode: turboMode.checked,
     maxConcurrentRequests: Number(maxConcurrentRequests.value || 8),
     batchSize: 1
   });

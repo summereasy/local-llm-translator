@@ -30,6 +30,9 @@ I do not understand why this kind of browser translation tool is so often closed
 - Translate the current page with `Option+A`.
 - Toggle translated/original text with the same shortcut.
 - Translate selected text with `Option+E` or the floating button.
+- Turbo mode: translations stream onto the page as the model generates, and the
+  first viewport is translated first. Falls back to whole-block responses on
+  Ollama or backends without streaming.
 - Configure endpoint, model, API key, target language, prompt, display mode, text style, and request concurrency.
 - Cache translated paragraphs in memory while the page is open, so toggling page translation off/on does not resend already translated paragraphs.
 

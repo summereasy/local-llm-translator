@@ -34,4 +34,9 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({}).disableBackendCache).toBe(defaultSettings.disableBackendCache);
     expect(normalizeSettings({ disableBackendCache: false }).disableBackendCache).toBe(false);
   });
+
+  test("defaults turboMode to true and respects explicit false", () => {
+    expect(normalizeSettings({}).turboMode).toBe(defaultSettings.turboMode);
+    expect(normalizeSettings({ turboMode: false }).turboMode).toBe(false);
+  });
 });

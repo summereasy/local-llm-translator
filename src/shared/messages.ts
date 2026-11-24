@@ -50,6 +50,44 @@ export type LocalTranslatorRequest =
   | GetPageStateRequest
   | GetCommandShortcutRequest;
 
+/** 极速模式的流式通道: content script 每批翻译建一个 Port, 逐 token 推送 delta。 */
+export const streamPortName = "local-translator-stream";
+
+export type StreamTranslateRequest = {
+  type: "stream-translate";
+  texts: string[];
+};
+
+/** MV3 service worker 只有"端口上来消息"才续命;首 token 前由 content 侧定时发。 */
+export type StreamPingRequest = {
+  type: "stream-ping";
+};
+
+export type StreamDeltaEvent = {
+  type: "stream-delta";
+  index: number;
+  delta: string;
+};
+
+export type StreamDoneEvent = {
+  type: "stream-done";
+  index: number;
+  text: string;
+};
+
+export type StreamErrorEvent = {
+  type: "stream-error";
+  index: number;
+  error: string;
+};
+
+export type StreamPortMessage =
+  | StreamTranslateRequest
+  | StreamPingRequest
+  | StreamDeltaEvent
+  | StreamDoneEvent
+  | StreamErrorEvent;
+
 export type TranslateTextResponse =
   | {
       ok: true;

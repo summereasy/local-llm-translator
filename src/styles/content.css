@@ -102,6 +102,11 @@
   display: none !important;
 }
 
+/* 极速模式: 流式上屏期间就按 replace 语义隐藏原文,完成后不再布局跳动。 */
+.local-translator-mode-replace > .local-translator-wrapper.local-translator-streaming > .local-translator-original {
+  display: none !important;
+}
+
 .local-translator-preserve-breaks {
   white-space: pre-wrap;
   word-break: break-word;
