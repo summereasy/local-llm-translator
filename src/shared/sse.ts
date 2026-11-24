@@ -26,6 +26,19 @@ export class SseAccumulator {
     }
     return events;
   }
+
+  /**
+   * 流结束后的收尾:个别实现最后一个事件不带空行就 EOF,残余 buffer
+   * 里若有 data 行也应当作最后一个事件吐出,否则会丢尾部 delta。
+   */
+  flush(): string[] {
+    if (!this.buffer) {
+      return [];
+    }
+    const data = extractSseData(this.buffer);
+    this.buffer = "";
+    return data !== null ? [data] : [];
+  }
 }
 
 /** 从一个完整事件里拼出 data 载荷;没有 data 行的事件(如注释)返回 null。 */

@@ -58,6 +58,11 @@ export type StreamTranslateRequest = {
   texts: string[];
 };
 
+/** MV3 service worker 只有"端口上来消息"才续命;首 token 前由 content 侧定时发。 */
+export type StreamPingRequest = {
+  type: "stream-ping";
+};
+
 export type StreamDeltaEvent = {
   type: "stream-delta";
   index: number;
@@ -78,6 +83,7 @@ export type StreamErrorEvent = {
 
 export type StreamPortMessage =
   | StreamTranslateRequest
+  | StreamPingRequest
   | StreamDeltaEvent
   | StreamDoneEvent
   | StreamErrorEvent;

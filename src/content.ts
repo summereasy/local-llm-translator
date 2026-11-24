@@ -238,9 +238,20 @@ function setupLiveTranslationListeners(): void {
   window.addEventListener("resize", onViewportChange, { passive: true });
 
   mutationObserver?.disconnect();
-  mutationObserver = new MutationObserver(() => {
-    if (pageActive) {
-      scheduleVisibleTranslation();
+  mutationObserver = new MutationObserver((mutations) => {
+    if (!pageActive) {
+      return;
+    }
+    // 自己写译文触发的 mutation 不算页面变化,否则流式渲染期间会
+    // 每 120ms 全页重扫一遍。
+    for (const mutation of mutations) {
+      const target = mutation.target as Element | null;
+      const fromSelf =
+        target && typeof target.closest === "function" && target.closest(".local-translator-wrapper");
+      if (!fromSelf) {
+        scheduleVisibleTranslation();
+        return;
+      }
     }
   });
   if (document.body) {
@@ -277,7 +288,22 @@ function scheduleVisibleTranslation(immediate = false): void {
   }, 120);
 }
 
+let collectingBlocks = false;
+
 async function translateVisibleBlocks(): Promise<void> {
+  if (!pageActive || !document.body || collectingBlocks) {
+    return;
+  }
+
+  collectingBlocks = true;
+  try {
+    await collectAndTranslate();
+  } finally {
+    collectingBlocks = false;
+  }
+}
+
+async function collectAndTranslate(): Promise<void> {
   if (!pageActive || !document.body) {
     return;
   }
@@ -287,6 +313,11 @@ async function translateVisibleBlocks(): Promise<void> {
   const blocks = collectVisibleBlocks(settings).filter((element) => !activeElements.has(element));
   if (blocks.length === 0) {
     broadcastProgress();
+    return;
+  }
+  if (!pageActive || currentRunId !== runId) {
+    // 收集期间 run 变了(关→开切换): 让新一轮滚动调度接手,别把新 run 悬死。
+    scheduleVisibleTranslation();
     return;
   }
 
@@ -374,7 +405,11 @@ async function translateBlockBatch(
             return;
           }
           streamedAnyRender = true;
-          renderStreamingText(shell, partial);
+          const uncachedItem = uncached[index];
+          renderStreamingText(
+            shell,
+            restoreTranslationTokens(partial, uncachedItem?.tokens ?? [])
+          );
         });
       } catch (streamError) {
         if (streamedAnyRender) {
@@ -391,7 +426,12 @@ async function translateBlockBatch(
       const translated = translatedTexts[index];
       const shell = shells.get(element);
       const uncachedItem = uncached[index];
-      if (!translated || !pageActive || currentRunId !== runId || !element.isConnected) {
+      if (!pageActive || currentRunId !== runId) {
+        // 旧 run 的批次:只清掉自己的壳,不碰新一轮的 failed/active/pending。
+        shell && restoreBlock(shell);
+        return;
+      }
+      if (!translated || !element.isConnected) {
         shell && restoreBlock(shell);
         failedElements.add(element);
         return;
@@ -403,13 +443,18 @@ async function translateBlockBatch(
       processedElements.add(element);
     });
   } catch (error) {
+    const stale = !pageActive || currentRunId !== runId;
     shells.forEach((shell) => restoreBlock(shell));
-    elements.forEach((element) => failedElements.add(element));
+    if (!stale) {
+      elements.forEach((element) => failedElements.add(element));
+    }
     warnPageTranslationError(settings, error);
     console.debug("[local-llm-translator] translation failed", error);
   } finally {
-    elements.forEach((element) => activeElements.delete(element));
-    pending = Math.max(0, pending - elements.length);
+    if (pageActive && currentRunId === runId) {
+      elements.forEach((element) => activeElements.delete(element));
+      pending = Math.max(0, pending - elements.length);
+    }
     broadcastProgress();
   }
 }
@@ -698,6 +743,7 @@ function completeBlockTranslation(
   translated: string,
   settings: LocalTranslatorSettings
 ): void {
+  block.wrapper.classList.remove("local-translator-streaming");
   block.wrapper.classList.add("local-translator-completed");
   const preserveBreaks = isXTweetTextElement(block.element) || translated.includes("\n");
   block.result.className =
@@ -740,6 +786,16 @@ function completeBlockTranslation(
 function restorePage(): void {
   runId += 1;
   stopLiveTranslationListeners();
+  // 掐断在途流式连接:后台 onDisconnect 会 abort 对应 fetch,
+  // 不让旧请求继续占用本地模型、排队在下一轮翻译前面。
+  for (const port of activeStreamPorts) {
+    try {
+      port.disconnect();
+    } catch {
+      // 已断。
+    }
+  }
+  activeStreamPorts.clear();
 
   for (const item of [...translatedBlocks]) {
     restoreBlock(item);
@@ -854,10 +910,17 @@ async function translateTexts(texts: string[]): Promise<string[]> {
  * 极速模式: 每批翻译建一个长连 Port,后台 stream:true 拉取并逐 token 推回。
  * onDelta 收到的是该段"到目前为止"的完整文本;建流/中途失败由调用方回落。
  */
+const activeStreamPorts = new Set<chrome.runtime.Port>();
+const streamPingIntervalMs = 20_000;
+const streamFirstDeltaTimeoutMs = 60_000;
+
 function streamTranslateTexts(
   texts: string[],
   onDelta: (index: number, partialText: string) => void
 ): Promise<string[]> {
+  if (texts.length === 0) {
+    return Promise.resolve([]);
+  }
   return new Promise((resolve, reject) => {
     let port: chrome.runtime.Port;
     try {
@@ -871,12 +934,16 @@ function streamTranslateTexts(
     const settled = new Array<boolean>(texts.length).fill(false);
     let firstError: Error | null = null;
     let finished = false;
+    let gotAnyDelta = false;
 
     const finish = () => {
       if (finished) {
         return;
       }
       finished = true;
+      window.clearInterval(pingTimer);
+      window.clearTimeout(watchdogTimer);
+      activeStreamPorts.delete(port);
       port.onMessage.removeListener(listener);
       try {
         port.disconnect();
@@ -896,9 +963,30 @@ function streamTranslateTexts(
       }
     };
 
+    // MV3: 只有端口上来消息才给 service worker 续命;首 token 前定时 ping。
+    const pingTimer = window.setInterval(() => {
+      try {
+        port.postMessage({ type: "stream-ping" });
+      } catch {
+        // 端口已坏,onDisconnect 会收尾。
+      }
+    }, streamPingIntervalMs);
+
+    // 首 delta 看门狗:超时视为流式不可用,让调用方回落整段请求,
+    // 不等 service worker 被 30s idle 杀掉才反应。
+    const watchdogTimer = window.setTimeout(() => {
+      if (finished || gotAnyDelta) {
+        return;
+      }
+      firstError = new Error("流式首响应超时,已回落整段请求。");
+      settled.fill(true);
+      finish();
+    }, streamFirstDeltaTimeoutMs);
+
     const listener = (message: StreamPortMessage) => {
       if (message.type === "stream-delta") {
         if (!settled[message.index]) {
+          gotAnyDelta = true;
           results[message.index] += message.delta;
           onDelta(message.index, results[message.index] ?? "");
         }
@@ -920,6 +1008,7 @@ function streamTranslateTexts(
       }
     };
 
+    activeStreamPorts.add(port);
     port.onMessage.addListener(listener);
     port.onDisconnect.addListener(() => {
       if (finished) {
@@ -949,8 +1038,11 @@ function renderStreamingText(block: TranslatedBlock, partial: string): void {
     return;
   }
   block.streamRenderAt = now;
+  block.wrapper.classList.add("local-translator-streaming");
   block.result.className = "local-translator-result local-translator-streaming";
-  block.result.textContent = partial;
+  // 掐掉尾巴上只到了一半的 @mention 保护符,避免豆腐块闪一下。
+  const visible = partial.replace(/\uE000[A-Za-z0-9]*$/, "");
+  block.result.textContent = visible;
 }
 
 async function showSelectionButton(text: string, anchor: SelectionAnchor): Promise<void> {

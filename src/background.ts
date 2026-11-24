@@ -77,52 +77,57 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== streamPortName) {
     return;
   }
+  // 页面侧断开(关闭翻译/导航/关标签)时终止在途 fetch,别继续占用本地模型。
+  const aborter = new AbortController();
+  port.onDisconnect.addListener(() => aborter.abort());
   port.onMessage.addListener((message: StreamPortMessage) => {
     if (message.type === "stream-translate") {
-      void handleStreamTranslate(port, message.texts);
+      void handleStreamTranslate(port, message.texts, aborter.signal);
     }
   });
 });
 
-async function handleStreamTranslate(port: chrome.runtime.Port, texts: string[]): Promise<void> {
-  const settings = await loadSettings();
-  if (settings.backendKind !== "openai-compatible") {
-    texts.forEach((_, index) =>
-      postToPort(port, { type: "stream-error", index, error: "Ollama 后端不支持流式,请关闭极速模式。" })
-    );
+async function handleStreamTranslate(
+  port: chrome.runtime.Port,
+  texts: string[],
+  signal: AbortSignal
+): Promise<void> {
+  if (texts.length === 0) {
     return;
   }
-
   try {
-    assertBackendSupportsPreset(settings);
-  } catch (error) {
-    texts.forEach((_, index) =>
-      postToPort(port, { type: "stream-error", index, error: errorMessage(error) })
-    );
-    return;
-  }
-
-  let cursor = 0;
-  const workerCount = Math.min(settings.maxConcurrentRequests, texts.length);
-  const workers = Array.from({ length: workerCount }, async () => {
-    for (;;) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= texts.length) {
-        return;
-      }
-      try {
-        const text = texts[index] ?? "";
-        const translated = await streamTranslateOne(settings, text, (delta) =>
-          postToPort(port, { type: "stream-delta", index, delta })
-        );
-        postToPort(port, { type: "stream-done", index, text: translated });
-      } catch (error) {
-        postToPort(port, { type: "stream-error", index, error: errorMessage(error) });
-      }
+    const settings = await loadSettings();
+    if (settings.backendKind !== "openai-compatible") {
+      throw new Error("Ollama 后端不支持流式,请关闭极速模式。");
     }
-  });
-  await Promise.all(workers);
+    assertBackendSupportsPreset(settings);
+
+    let cursor = 0;
+    const workerCount = Math.min(settings.maxConcurrentRequests, texts.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+      for (;;) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= texts.length) {
+          return;
+        }
+        try {
+          const text = texts[index] ?? "";
+          const translated = await streamTranslateOne(settings, text, signal, (delta) =>
+            postToPort(port, { type: "stream-delta", index, delta })
+          );
+          postToPort(port, { type: "stream-done", index, text: translated });
+        } catch (error) {
+          postToPort(port, { type: "stream-error", index, error: errorMessage(error) });
+        }
+      }
+    });
+    await Promise.all(workers);
+  } catch (error) {
+    // 设置读取等前置步骤失败:每个 index 都要收到终止事件,content 侧才不会悬等。
+    const message = errorMessage(error);
+    texts.forEach((_, index) => postToPort(port, { type: "stream-error", index, error: message }));
+  }
 }
 
 function postToPort(port: chrome.runtime.Port, message: StreamPortMessage): void {
@@ -136,6 +141,7 @@ function postToPort(port: chrome.runtime.Port, message: StreamPortMessage): void
 async function streamTranslateOne(
   settings: LocalTranslatorSettings,
   text: string,
+  signal: AbortSignal,
   onDelta: (delta: string) => void
 ): Promise<string> {
   if (!settings.model) {
@@ -144,6 +150,7 @@ async function streamTranslateOne(
 
   const response = await fetch(openAIChatCompletionsUrl(settings.baseUrl), {
     method: "POST",
+    signal,
     headers: {
       "content-type": "application/json",
       ...(settings.apiKey ? { authorization: `Bearer ${settings.apiKey}` } : {}),
@@ -168,31 +175,58 @@ async function streamTranslateOne(
     throw new Error(`本地服务请求失败: HTTP ${response.status} ${body.slice(0, 300)}`);
   }
 
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/event-stream")) {
+    // 后端无视 stream:true 返回普通 JSON:抛错让 content 侧回落整段请求,
+    // 否则会被当成"空译文"静默失败。
+    throw new Error("后端没有返回 SSE 流(text/event-stream),已回落整段请求。");
+  }
+
   const accumulator = new SseAccumulator();
   const decoder = new TextDecoder();
   const reader = response.body.getReader();
   let result = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  let sawDataEvent = false;
+  const consume = (data: string): void => {
+    if (data === "[DONE]") {
+      sawDataEvent = true;
+      return;
     }
-    for (const data of accumulator.push(decoder.decode(value, { stream: true }))) {
-      if (data === "[DONE]") {
-        continue;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(data);
+    } catch {
+      return;
+    }
+    const apiError = (payload as { error?: { message?: unknown } } | null)?.error?.message;
+    if (typeof apiError === "string" && apiError) {
+      throw new Error(`本地服务流式返回错误: ${apiError}`);
+    }
+    const delta = extractDeltaContent(payload);
+    if (delta) {
+      sawDataEvent = true;
+      result += delta;
+      onDelta(delta);
+    }
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
       }
-      let payload: unknown;
-      try {
-        payload = JSON.parse(data);
-      } catch {
-        continue;
-      }
-      const delta = extractDeltaContent(payload);
-      if (delta) {
-        result += delta;
-        onDelta(delta);
+      for (const data of accumulator.push(decoder.decode(value, { stream: true }))) {
+        consume(data);
       }
     }
+    for (const data of [...accumulator.push(decoder.decode()), ...accumulator.flush()]) {
+      consume(data);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  if (!sawDataEvent) {
+    throw new Error("流式响应里没有任何事件,已回落整段请求。");
   }
   return result.trim();
 }

@@ -32,6 +32,28 @@ describe("SseAccumulator", () => {
     const acc = new SseAccumulator();
     expect(acc.push(": heartbeat\n\n")).toEqual([]);
   });
+
+  test("flush() emits a trailing event without a blank line", () => {
+    const acc = new SseAccumulator();
+    expect(acc.push("data: [DONE]\n")).toEqual([]);
+    expect(acc.flush()).toEqual(["[DONE]"]);
+    expect(acc.flush()).toEqual([]);
+  });
+
+  test("survives byte-level chunk boundaries through TextDecoder", () => {
+    const acc = new SseAccumulator();
+    const decoder = new TextDecoder();
+    const events: string[] = [];
+    const bytes = new TextEncoder().encode('data: {"x":"流式翻译"}\n\ndata: [DONE]\n\n');
+    // 模拟网络层把字节流在任意位置切开(含多字节字符中间)。
+    const slices = [0, 1, 5, 9, 17, 25, 31, bytes.length];
+    for (let i = 0; i < slices.length - 1; i += 1) {
+      const chunk = bytes.slice(slices[i], slices[i + 1]);
+      events.push(...acc.push(decoder.decode(chunk, { stream: true })));
+    }
+    events.push(...acc.push(decoder.decode()));
+    expect(events).toEqual(['{"x":"流式翻译"}', "[DONE]"]);
+  });
 });
 
 describe("extractDeltaContent", () => {
