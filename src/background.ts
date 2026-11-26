@@ -4,7 +4,8 @@ import {
   presetSupportsBatchPrompt,
   resolveChatTemplateKwargs,
   resolvePromptTemplate,
-  resolveTemperature
+  resolveSamplingParams,
+  toOllamaSamplingOptions
 } from "./shared/modelPresets";
 import { formatCommandShortcut } from "./shared/shortcuts";
 import { readSseBody, StreamDeltaAssembler } from "./shared/sse";
@@ -165,7 +166,7 @@ async function streamTranslateOne(
         }
       ],
       ...chatTemplateKwargsBody(settings),
-      temperature: resolveTemperature(settings.model),
+      ...openAISamplingBody(settings),
       stream: true
     })
   });
@@ -251,7 +252,7 @@ async function translateWithOpenAICompatible(settings: LocalTranslatorSettings, 
         }
       ],
       ...chatTemplateKwargsBody(settings),
-      temperature: resolveTemperature(settings.model),
+      ...openAISamplingBody(settings),
       stream: false
     })
   });
@@ -281,7 +282,7 @@ async function translateBatchWithOpenAICompatible(settings: LocalTranslatorSetti
         }
       ],
       ...chatTemplateKwargsBody(settings),
-      temperature: resolveTemperature(settings.model),
+      ...openAISamplingBody(settings),
       stream: false
     })
   });
@@ -312,6 +313,7 @@ async function translateWithOllama(settings: LocalTranslatorSettings, text: stri
           content: renderPrompt(settings, text)
         }
       ],
+      ...ollamaSamplingBody(settings),
       stream: false
     })
   });
@@ -338,6 +340,7 @@ async function translateBatchWithOllama(settings: LocalTranslatorSettings, texts
           content: renderBatchPrompt(settings, texts)
         }
       ],
+      ...ollamaSamplingBody(settings),
       stream: false
     })
   });
@@ -376,6 +379,27 @@ function chatTemplateKwargsBody(settings: LocalTranslatorSettings): Record<strin
     targetLanguage: settings.targetLanguage
   });
   return kwargs ? { chat_template_kwargs: kwargs } : {};
+}
+
+/** 展开 OpenAI-compatible 采样参数,未设置的字段不会出现在请求 JSON 中。 */
+function openAISamplingBody(settings: LocalTranslatorSettings): Record<string, number> {
+  return resolveSamplingParams({
+    model: settings.model,
+    samplingParams: settings.samplingParams,
+    samplingParamsMode: settings.samplingParamsMode
+  }) as Record<string, number>;
+}
+
+/** 将采样参数映射成 Ollama native /api/chat 的 options 对象;全空时省略 options。 */
+function ollamaSamplingBody(settings: LocalTranslatorSettings): Record<string, unknown> {
+  const options = toOllamaSamplingOptions(
+    resolveSamplingParams({
+      model: settings.model,
+      samplingParams: settings.samplingParams,
+      samplingParamsMode: settings.samplingParamsMode
+    })
+  );
+  return options ? { options } : {};
 }
 
 function assertBackendSupportsPreset(settings: LocalTranslatorSettings): void {

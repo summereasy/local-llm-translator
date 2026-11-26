@@ -99,7 +99,8 @@ form {
   gap: 24px;
 }
 
-.style-fieldset {
+.style-fieldset,
+.sampling-fieldset {
   display: grid;
   gap: 14px;
   min-width: 0;
@@ -108,11 +109,30 @@ form {
   padding: 0;
 }
 
-.style-fieldset legend {
+.style-fieldset legend,
+.sampling-fieldset legend {
   display: grid;
   gap: 6px;
   margin-bottom: 12px;
   padding: 0;
+}
+
+.sampling-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.sampling-field {
+  display: grid;
+  gap: 6px;
+}
+
+.sampling-field span {
+  color: #374151;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .style-fieldset.is-disabled {
@@ -243,6 +263,8 @@ textarea {
   resize: vertical;
 }
 
+input:disabled,
+input.is-disabled,
 textarea:disabled,
 textarea.is-disabled {
   background: #f6f8fa;

@@ -5,6 +5,18 @@ export type BackendKind = "openai-compatible" | "ollama";
 /** auto:按模型名匹配内置模板;custom:强制使用用户填写的模板。 */
 export type PromptTemplateMode = "auto" | "custom";
 
+/** auto:按模型名匹配内置采样参数;custom:使用用户自定义的采样参数。 */
+export type SamplingParamsMode = "auto" | "custom";
+
+/** 采样参数全可选:未填/undefined 的字段不会发进请求 JSON。 */
+export type SamplingParams = {
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  repetition_penalty?: number;
+  max_tokens?: number;
+};
+
 export type TranslationMode = "replace" | "bilingual";
 
 export type TranslationTextStyle =
@@ -23,6 +35,8 @@ export type LocalTranslatorSettings = {
   targetLanguage: string;
   promptTemplate: string;
   promptTemplateMode: PromptTemplateMode;
+  samplingParams: SamplingParams;
+  samplingParamsMode: SamplingParamsMode;
   translationMode: TranslationMode;
   translationTextStyle: TranslationTextStyle;
   enableSelectionButton: boolean;
@@ -42,6 +56,8 @@ export const defaultSettings: LocalTranslatorSettings = {
   targetLanguage: "简体中文",
   promptTemplate: "",
   promptTemplateMode: "auto",
+  samplingParams: {},
+  samplingParamsMode: "auto",
   translationMode: "bilingual",
   translationTextStyle: "muted",
   enableSelectionButton: true,
@@ -99,6 +115,8 @@ export function normalizeSettings(value: unknown): LocalTranslatorSettings {
         : defaultSettings.targetLanguage,
     promptTemplate: normalizePromptTemplate(input),
     promptTemplateMode: normalizePromptTemplateMode(input),
+    samplingParams: normalizeSamplingParams(input.samplingParams),
+    samplingParamsMode: normalizeSamplingParamsMode(input),
     translationMode: input.translationMode === "replace" ? "replace" : "bilingual",
     translationTextStyle: normalizeTextStyle(input.translationTextStyle),
     disableBackendCache:
@@ -139,6 +157,63 @@ function normalizePromptTemplate(input: Partial<LocalTranslatorSettings>): strin
     return template;
   }
   return template.trim() ? template : fallbackPromptTemplate;
+}
+
+function normalizeSamplingParamsMode(input: Partial<LocalTranslatorSettings>): SamplingParamsMode {
+  if (input.samplingParamsMode === "auto" || input.samplingParamsMode === "custom") {
+    return input.samplingParamsMode;
+  }
+  return defaultSettings.samplingParamsMode;
+}
+
+export function normalizeSamplingParams(value: unknown): SamplingParams {
+  if (typeof value !== "object" || value === null) {
+    return {};
+  }
+  const input = value as Record<string, unknown>;
+  const result: SamplingParams = {};
+
+  const temperature = parseFiniteNumber(input.temperature);
+  if (temperature !== undefined && temperature >= 0) {
+    result.temperature = temperature;
+  }
+
+  const topP = parseFiniteNumber(input.top_p);
+  if (topP !== undefined && topP >= 0 && topP <= 1) {
+    result.top_p = topP;
+  }
+
+  const topK = parseFiniteNumber(input.top_k);
+  if (topK !== undefined && topK >= 0) {
+    result.top_k = Math.round(topK);
+  }
+
+  const repetitionPenalty = parseFiniteNumber(input.repetition_penalty);
+  if (repetitionPenalty !== undefined && repetitionPenalty > 0) {
+    result.repetition_penalty = repetitionPenalty;
+  }
+
+  const maxTokens = parseFiniteNumber(input.max_tokens);
+  if (maxTokens !== undefined && maxTokens >= 1) {
+    result.max_tokens = Math.round(maxTokens);
+  }
+
+  return result;
+}
+
+function parseFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
 }
 
 function normalizeTextStyle(value: unknown): TranslationTextStyle {
